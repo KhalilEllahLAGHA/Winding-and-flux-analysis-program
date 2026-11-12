@@ -15,24 +15,24 @@ Conventions used by the pages:
 # --- Design tokens -----------------------------------------------------------
 
 # Background layers (darkest -> lightest).
-BG_WINDOW = "#14171c"     # page background
-BG_SURFACE = "#1d222a"    # cards, group boxes, bars
-BG_INPUT = "#262d37"      # editable fields and buttons
-BG_HOVER = "#303947"      # hover fill
+BG_WINDOW = "#15191f"     # page background
+BG_SURFACE = "#1d232c"    # cards, group boxes, bars
+BG_INPUT = "#252e39"      # editable fields and buttons
+BG_HOVER = "#303d4c"      # hover fill
 BG_PRESSED = "#10141a"    # pressed fill
 
-BORDER = "#39424f"
-BORDER_SOFT = "#2a313c"
+BORDER = "#3b4756"
+BORDER_SOFT = "#303a47"
 
-TEXT = "#e8ebef"
-TEXT_DIM = "#9aa4b2"
-TEXT_FAINT = "#6d7785"
+TEXT = "#e9edf3"
+TEXT_DIM = "#a2afbf"
+TEXT_FAINT = "#718094"
 
-ACCENT = "#4c8dff"
+ACCENT = "#4f8cff"
 ACCENT_HOVER = "#6ba1ff"
 ACCENT_PRESSED = "#3a72d8"
 
-SUCCESS = "#3ddc84"
+SUCCESS = "#49c6b1"
 WARNING = "#f0b429"
 DANGER = "#ff6b6b"
 
@@ -42,10 +42,27 @@ FONT_FAMILY = '"Segoe UI", "Helvetica Neue", Arial, sans-serif'
 
 _BASE = f"""
     QWidget {{
-        background-color: {BG_WINDOW};
         color: {TEXT};
         font-family: {FONT_FAMILY};
         font-size: 13px;
+    }}
+
+    QMainWindow, QWidget#appShell, QDialog {{
+        background-color: {BG_WINDOW};
+    }}
+
+    QFrame#appHeader {{
+        background-color: {BG_SURFACE};
+        border-bottom: 1px solid {BORDER_SOFT};
+    }}
+
+    QScrollArea {{
+        border: none;
+        background-color: transparent;
+    }}
+
+    QScrollArea > QWidget > QWidget {{
+        background-color: transparent;
     }}
 
     QLabel {{
@@ -73,11 +90,11 @@ _BUTTONS = f"""
         background-color: {BG_INPUT};
         color: {TEXT};
         border: 1px solid {BORDER};
-        padding: 7px 14px;
+        padding: 7px 12px;
         border-radius: 6px;
         font-size: 13px;
         font-weight: 600;
-        min-width: 80px;
+        min-width: 64px;
     }}
 
     QPushButton:hover {{
@@ -127,11 +144,11 @@ _GROUP_BOX = f"""
         background-color: {BG_SURFACE};
         color: {TEXT};
         border: 1px solid {BORDER_SOFT};
-        border-radius: 8px;
-        margin-top: 14px;
-        padding: 10px 6px 6px 6px;
+        border-radius: 9px;
+        margin-top: 10px;
+        padding: 6px 6px 6px 6px;
         font-weight: 600;
-        font-size: 13px;
+        font-size: 12px;
     }}
 
     QGroupBox::title {{
@@ -139,8 +156,8 @@ _GROUP_BOX = f"""
         subcontrol-position: top left;
         left: 10px;
         padding: 0 6px;
-        color: {ACCENT_HOVER};
-        background-color: {BG_WINDOW};
+        color: {TEXT_DIM};
+        background-color: {BG_SURFACE};
     }}
 """
 
@@ -152,7 +169,7 @@ _LINE_EDIT = f"""
         padding: 6px 8px;
         border-radius: 6px;
         font-size: 13px;
-        min-width: 70px;
+        min-width: 54px;
         selection-background-color: {ACCENT};
     }}
 
@@ -180,10 +197,10 @@ def _spin_box_rules(selector):
         background-color: {BG_INPUT};
         color: {TEXT};
         border: 1px solid {BORDER};
-        padding: 5px 8px;
+        padding: 6px 8px;
         border-radius: 6px;
         font-size: 13px;
-        min-width: 70px;
+        min-width: 54px;
         selection-background-color: {ACCENT};
     }}
 
@@ -202,28 +219,6 @@ def _spin_box_rules(selector):
         border: 1px solid {BORDER_SOFT};
     }}
 
-    {selector}::up-button, {selector}::down-button {{
-        background-color: {BG_HOVER};
-        border: none;
-        width: 18px;
-    }}
-
-    {selector}::up-button {{
-        border-top-right-radius: 5px;
-    }}
-
-    {selector}::down-button {{
-        border-bottom-right-radius: 5px;
-    }}
-
-    {selector}::up-button:hover, {selector}::down-button:hover {{
-        background-color: {ACCENT};
-    }}
-
-    {selector}::up-arrow, {selector}::down-arrow {{
-        width: 7px;
-        height: 7px;
-    }}
 """
 
 
@@ -249,10 +244,10 @@ _COMBO_BOX = f"""
         border: 1px solid {ACCENT};
     }}
 
-    QComboBox::drop-down {{
-        background-color: transparent;
-        border: none;
-        width: 24px;
+    QComboBox:disabled {{
+        background-color: {BG_SURFACE};
+        color: {TEXT_FAINT};
+        border: 1px solid {BORDER_SOFT};
     }}
 
     QComboBox QAbstractItemView {{
@@ -313,6 +308,10 @@ _CHECK_BOX = f"""
         border: 1px solid {ACCENT};
     }}
 
+    QCheckBox:focus, QRadioButton:focus {{
+        outline: 1px solid {ACCENT};
+    }}
+
     QCheckBox:disabled {{
         color: {TEXT_FAINT};
     }}
@@ -343,6 +342,10 @@ _RADIO_BUTTON = f"""
     QRadioButton::indicator:checked {{
         border: 5px solid {ACCENT};
         background-color: #ffffff;
+    }}
+
+    QRadioButton:disabled {{
+        color: {TEXT_FAINT};
     }}
 """
 
@@ -421,6 +424,7 @@ def _tab_bar_rules(tab_extras=""):
         padding: 7px 10px;
         margin-right: 2px;
         font-size: 12px;
+        min-width: 0px;
         {tab_extras}
     }}
 
@@ -446,7 +450,7 @@ _MATPLOTLIB_TOOLBAR = """
         border: 1px solid #d7dce1;
         border-radius: 6px;
         spacing: 2px;
-        padding: 2px;
+        padding: 1px;
     }
 
     QToolBar QToolButton {
@@ -454,7 +458,7 @@ _MATPLOTLIB_TOOLBAR = """
         color: #333333;
         border: 1px solid transparent;
         border-radius: 4px;
-        padding: 4px;
+        padding: 3px;
         margin: 1px;
         font-size: 11px;
     }
@@ -489,7 +493,7 @@ _MATPLOTLIB_TOOLBAR = """
 # page-level stylesheet of its own.
 MAIN_WINDOW_STYLE = (
     _BASE + _BUTTONS + _GROUP_BOX + _CHECK_BOX + _RADIO_BUTTON + _SPIN_BOXES
-    + _SCROLL_BARS + f"""
+    + _LINE_EDIT + _COMBO_BOX + _SCROLL_BARS + _MATPLOTLIB_TOOLBAR + f"""
     QTabWidget::pane {{
         border: none;
         background-color: {BG_WINDOW};
@@ -500,9 +504,9 @@ MAIN_WINDOW_STYLE = (
         color: {TEXT_DIM};
         border: none;
         border-bottom: 3px solid transparent;
-        min-width: 220px;
-        padding: 12px 24px;
-        font-size: 14px;
+        min-width: 150px;
+        padding: 11px 22px;
+        font-size: 13px;
     }}
 
     QTabBar::tab:selected {{
@@ -592,7 +596,7 @@ MATRIX_DIALOG_STYLE = _SCROLL_BARS + f"""
 # --- Reusable inline styles ----------------------------------------------------
 
 PAGE_TITLE_STYLE = (
-    f"color: {TEXT}; font-size: 18px; font-weight: 700;"
+    f"color: {TEXT}; font-size: 20px; font-weight: 700;"
     "background: transparent;"
 )
 
@@ -619,7 +623,7 @@ _STATUS_COLORS = {
 _BADGE_TINTS = {
     'muted': (TEXT_DIM, "rgba(154, 164, 178, 26)"),
     'info': (ACCENT_HOVER, "rgba(76, 141, 255, 30)"),
-    'success': (SUCCESS, "rgba(61, 220, 132, 30)"),
+    'success': (SUCCESS, "rgba(73, 198, 177, 24)"),
     'warning': (WARNING, "rgba(240, 180, 41, 30)"),
     'error': (DANGER, "rgba(255, 107, 107, 30)"),
 }
@@ -661,7 +665,7 @@ def step_badge_style(state):
                   f"border: 1px solid {ACCENT};")
     if state == 'done':
         return (_STEP_BADGE_BASE
-                + "background-color: rgba(61, 220, 132, 30);"
+                + "background-color: rgba(73, 198, 177, 24);"
                   f"color: {SUCCESS}; border: 1px solid {SUCCESS};")
     return (_STEP_BADGE_BASE
             + f"background-color: transparent; color: {TEXT_FAINT};"

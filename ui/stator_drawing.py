@@ -1,27 +1,20 @@
 """Stator winding cross-section widget (formerly ``StatorDrawing.py``)."""
 
 import math
-from fractions import Fraction
 
-from PyQt5.QtCore import QPoint, QRect, Qt
-from PyQt5.QtGui import QColor, QFont, QPainter, QPen, QPixmap
-from PyQt5.QtWidgets import QWidget
+from PyQt5.QtCore import QPointF, QRectF, Qt
+from PyQt5.QtGui import QColor, QFont, QPainter, QPainterPath, QPen, QPixmap
+from PyQt5.QtWidgets import QToolTip, QWidget
 
-from utils.constants import DEFAULT_NUM_SLOTS, PHASE_COUNT
+from core.connection_matrix import (build_winding_connection_matrix,
+                                     phase_pattern_from_matrix)
+from utils.constants import DEFAULT_NUM_SLOTS
 
 PHASE_COLORS = {
-    'A': QColor(255, 0, 0),   # Red
-    'B': QColor(0, 0, 255),   # Blue
-    'C': QColor(0, 255, 0),   # Green
+    'A': QColor('#df4856'),
+    'B': QColor('#3277cf'),
+    'C': QColor('#159b75'),
 }
-
-# Drawing geometry (pixels / degrees).
-SLOT_ARC_WIDTH_DEG = 3
-SYMBOL_SIZE_PX = 12
-LEGEND_SYMBOL_SIZE_PX = 22
-LEGEND_ROW_SPACING_PX = 25
-DOUBLE_LAYER_ARC_OFFSET_PX = 33
-SINGLE_LAYER_ARC_OFFSET_PX = 15
 
 
 class StatorDrawing(QWidget):
@@ -34,6 +27,8 @@ class StatorDrawing(QWidget):
         self.coil_span = 6
         self.is_double_layer = True
         self.setMinimumSize(400, 400)
+        self.setMouseTracking(True)
+        self._hovered_slot = None
         self.winding_pattern = self.calculate_winding_pattern()
 
     def update_parameters(self, slots, poles, coil_span, is_double_layer):
@@ -42,6 +37,8 @@ class StatorDrawing(QWidget):
         self.poles = poles
         self.coil_span = coil_span
         self.is_double_layer = is_double_layer
+        self._hovered_slot = None
+        QToolTip.hideText()
         self.winding_pattern = self.calculate_winding_pattern()
         self.update()
 
@@ -54,174 +51,214 @@ class StatorDrawing(QWidget):
     # ------------------------------------------------------ winding pattern
 
     def calculate_winding_pattern(self):
-        """Per-slot (top_phase, bottom_phase) tuples.
-
-        Fractional-slot single layer windings use unequal coil groups;
-        otherwise phases follow the 120° electrical-angle zones.
-        """
-        q = Fraction(self.slots, PHASE_COUNT * self.poles)
-
-        if not self.is_double_layer and q.denominator > 1:
-            return self._fractional_single_layer_pattern(q)
-        return self._zone_based_pattern()
-
-    def _fractional_single_layer_pattern(self, q):
-        q_float = float(q)
-        floor_q = math.floor(q_float)
-        ceil_q = math.ceil(q_float)
-        group_sizes = [floor_q, floor_q, ceil_q, ceil_q]
-        phase_sequence = ('A', 'C', 'B')
-
-        pattern = []
-        slot = 0
-        phase_idx = 0
-        while slot < self.slots:
-            for _ in range(group_sizes[phase_idx % len(group_sizes)]):
-                if slot >= self.slots:
-                    break
-                pattern.append((phase_sequence[phase_idx % 3], None))
-                slot += 1
-            phase_idx += 1
-        return pattern
-
-    def _zone_based_pattern(self):
-        slots_per_pole = self.slots / self.poles
-        pattern = []
-
-        for slot in range(self.slots):
-            top_phase = self._phase_for_slot(slot, slots_per_pole)
-            if self.is_double_layer:
-                span = self.slots - self.coil_span
-                bottom_slot = (slot + span) % self.slots
-                bottom_phase = self._phase_for_slot(bottom_slot, slots_per_pole)
-                pattern.append((top_phase, bottom_phase))
-            else:
-                pattern.append((top_phase, None))
-        return pattern
-
-    @staticmethod
-    def _phase_for_slot(slot, slots_per_pole):
-        """Phase of a slot from its electrical angle (120° zones: A, C, B)."""
-        angle_per_slot = 360 / slots_per_pole
-        electrical_angle = (slot * angle_per_slot) % 360
-
-        if electrical_angle < 120:
-            return 'A'
-        if electrical_angle < 240:
-            return 'C'
-        return 'B'
+        """Use the same signed coil topology as the calculation engine."""
+        try:
+            self.winding_matrix = build_winding_connection_matrix(
+                self.slots, self.poles, self.is_double_layer, self.coil_span)
+            self.winding_error = None
+            return phase_pattern_from_matrix(self.winding_matrix)
+        except ValueError as error:
+            self.winding_matrix = None
+            self.winding_error = str(error)
+            # Retain the machine/slot drawing while showing no invented
+            # coil phases. The MMF engine reports the same physical error.
+            return [(None, None)] * self.slots
 
     # --------------------------------------------------------------- painting
 
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
+        painter.setRenderHint(QPainter.TextAntialiasing)
+        painter.fillRect(self.rect(), Qt.white)
+        center, radius = self._drawing_geometry()
+        bore = radius * 0.59
+        steel = QPainterPath()
+        steel.addEllipse(center, radius, radius)
+        steel.addEllipse(center, bore, bore)
+        steel.setFillRule(Qt.OddEvenFill)
+        painter.setPen(QPen(QColor('#7d8c9e'), 1.2))
+        painter.setBrush(QColor('#e8edf3'))
+        painter.drawPath(steel)
 
-        center = QPoint(self.width() // 2, self.height() // 2)
-        radius = min(self.width(), self.height()) // 2 - 20
-        inner_radius = radius * 0.65
-
-        painter.setPen(QPen(Qt.black, 2))
-        painter.drawEllipse(center, radius, radius)
-
+        slot_shape = self._slot_shape(radius)
+        body_width = self._slot_width(radius)
+        marker_radius = min(9.0, body_width * 0.36, radius * 0.042)
         for slot in range(self.slots):
-            self._draw_slot(painter, slot, center, inner_radius)
-            self._draw_slot_winding(painter, slot, center, inner_radius, radius)
+            painter.save()
+            painter.translate(center)
+            painter.rotate(-360 * slot / self.slots)
+            hovered = slot == self._hovered_slot
+            painter.fillPath(slot_shape, QColor('#edf4ff') if hovered else Qt.white)
+            painter.setBrush(Qt.NoBrush)
+            painter.setPen(QPen(QColor('#4f8cff') if hovered else QColor('#7d8c9e'),
+                                1.7 if hovered else 0.9))
+            # The slot mouth opens into the bore. Its outline has no end cap.
+            painter.drawPath(slot_shape)
+            if self.winding_matrix is not None:
+                fractions = (0.38, 0.75) if self.is_double_layer else (0.56,)
+                for layer, fraction in enumerate(fractions):
+                    phase, sign = self._coil_side(slot, layer)
+                    position = QPointF(bore + radius * 0.25 * fraction, 0)
+                    self._draw_conductor(painter, position, marker_radius,
+                                         PHASE_COLORS[phase], sign,
+                                         orientation=360 * slot / self.slots)
+            painter.restore()
+            self._draw_slot_number(painter, center, radius, slot)
 
-        painter.setPen(Qt.black)
-        painter.setFont(QFont("Arial", 12, QFont.Bold))
-        title_rect = QRect(center.x() - 150, center.y() - 10, 300, 20)
-        painter.drawText(title_rect, Qt.AlignCenter, "STATOR WINDING")
-
+        self._draw_center_label(painter, center, bore)
         self._draw_legend(painter)
 
-    def _draw_slot(self, painter, slot, center, inner_radius):
-        """Draw one slot opening, the tooth arc to the next slot, the slot
-        side lines, and the slot number."""
-        slot_angle = 360 / self.slots
-        angle_deg = -slot * slot_angle  # negative = counterclockwise
+    def _drawing_geometry(self):
+        center = QPointF(self.width() / 2, (self.height() - 4) / 2)
+        radius = max(20.0, min((self.width() - 84) / 2,
+                               (self.height() - 134) / 2))
+        return center, radius
 
-        if self.is_double_layer:
-            arc_radius = int(inner_radius) + DOUBLE_LAYER_ARC_OFFSET_PX
-        else:
-            arc_radius = int(inner_radius) + SINGLE_LAYER_ARC_OFFSET_PX
+    def _slot_width(self, radius):
+        return 2 * radius * 0.72 * math.sin(math.radians(360 / self.slots * 0.28))
 
-        painter.setPen(QPen(Qt.black, 2))
+    def _slot_shape(self, radius):
+        """An open slot with a narrow mouth, shoulders and rounded back."""
+        bore, back = radius * 0.59, radius * 0.84
+        width = self._slot_width(radius)
+        mouth = width * 0.40
+        tip, shoulder = bore + radius * 0.026, bore + radius * 0.055
+        corner = min(width * 0.24, radius * 0.018)
+        path = QPainterPath(QPointF(bore - 1.0, -mouth / 2))
+        path.lineTo(tip, -mouth / 2)
+        path.lineTo(shoulder, -width / 2)
+        path.lineTo(back - corner, -width / 2)
+        path.quadTo(back, -width / 2, back, -width / 2 + corner)
+        path.lineTo(back, width / 2 - corner)
+        path.quadTo(back, width / 2, back - corner, width / 2)
+        path.lineTo(shoulder, width / 2)
+        path.lineTo(tip, mouth / 2)
+        path.lineTo(bore - 1.0, mouth / 2)
+        return path
 
-        # Slot opening arc (Qt arcs use 1/16th-degree units).
-        arc_start = (angle_deg - SLOT_ARC_WIDTH_DEG / 2) * 16
-        arc_span = SLOT_ARC_WIDTH_DEG * 16
-        slot_rect = QRect(center.x() - arc_radius, center.y() - arc_radius,
-                          arc_radius * 2, arc_radius * 2)
-        painter.drawArc(slot_rect, int(arc_start), int(arc_span))
-
-        # Tooth arc between this slot and the next.
-        tooth_radius = int(inner_radius) - 4
-        tooth_start = (angle_deg + SLOT_ARC_WIDTH_DEG / 2) * 16
-        tooth_span = (slot_angle - SLOT_ARC_WIDTH_DEG) * 16
-        tooth_rect = QRect(center.x() - tooth_radius, center.y() - tooth_radius,
-                           tooth_radius * 2, tooth_radius * 2)
-        painter.drawArc(tooth_rect, int(tooth_start), int(tooth_span))
-
-        # Radial side lines connecting slot arc and tooth arc.
-        for side in (-1, 1):
-            side_angle = math.radians(angle_deg + side * SLOT_ARC_WIDTH_DEG / 2)
-            x1 = center.x() + tooth_radius * math.cos(side_angle)
-            y1 = center.y() + tooth_radius * math.sin(side_angle)
-            x2 = center.x() + arc_radius * math.cos(side_angle)
-            y2 = center.y() + arc_radius * math.sin(side_angle)
-            painter.drawLine(int(x1), int(y1), int(x2), int(y2))
-
-        # Slot number outside the slot arc.
-        number_radius = arc_radius + 20
-        number_angle = math.radians(angle_deg)
-        nx = center.x() + number_radius * math.cos(number_angle)
-        ny = center.y() + number_radius * math.sin(number_angle)
-        painter.setPen(Qt.black)
-        painter.setFont(QFont("Arial", 10))
-        painter.drawText(int(nx) - 8, int(ny) + 4, str(slot + 1))
-
-    def _draw_slot_winding(self, painter, slot, center, inner_radius, outer_radius):
-        """Draw the phase symbol(s) inside one slot."""
-        if slot >= len(self.winding_pattern):
-            return
-
-        angle_rad = math.radians(-360 / self.slots * slot)
-        top_phase, bottom_phase = self.winding_pattern[slot]
-
-        if self.is_double_layer:
-            bottom_r = (inner_radius + outer_radius) * 0.43
-            top_r = (inner_radius + outer_radius) * 0.4
-            if bottom_phase:
-                self._draw_symbol(painter, center, bottom_r, angle_rad, bottom_phase)
-            if top_phase:
-                self._draw_symbol(painter, center, top_r, angle_rad, top_phase)
-        elif top_phase:
-            r = (inner_radius + outer_radius) * 0.4
-            self._draw_symbol(painter, center, r, angle_rad, top_phase)
+    def _coil_side(self, slot, layer):
+        rows = self.winding_matrix[layer * 3:layer * 3 + 3, slot]
+        phase_index = next(index for index, value in enumerate(rows) if value)
+        return 'ABC'[phase_index], int(rows[phase_index])
 
     @staticmethod
-    def _draw_symbol(painter, center, r, angle_rad, phase):
-        x = center.x() + r * math.cos(angle_rad)
-        y = center.y() + r * math.sin(angle_rad)
+    def _draw_conductor(painter, position, radius, color, sign, orientation=0):
+        painter.save()
+        painter.translate(position)
+        painter.rotate(orientation)
+        origin = QPointF()
+        painter.setPen(QPen(color.darker(115), 0.7))
+        painter.setBrush(color)
+        painter.drawEllipse(origin, radius, radius)
+        if sign > 0:
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(Qt.white)
+            painter.drawEllipse(origin, max(1.0, radius * 0.23), max(1.0, radius * 0.23))
+        else:
+            painter.setPen(QPen(Qt.white, max(1.0, radius * 0.18), Qt.SolidLine, Qt.RoundCap))
+            delta = radius * 0.38
+            painter.drawLine(QPointF(-delta, -delta), QPointF(delta, delta))
+            painter.drawLine(QPointF(-delta, delta), QPointF(delta, -delta))
+        painter.restore()
 
-        painter.setPen(Qt.NoPen)
-        painter.setBrush(PHASE_COLORS[phase])
-        painter.drawEllipse(int(x - SYMBOL_SIZE_PX / 2),
-                            int(y - SYMBOL_SIZE_PX / 2),
-                            SYMBOL_SIZE_PX, SYMBOL_SIZE_PX)
+    def _draw_slot_number(self, painter, center, radius, slot):
+        angle = math.radians(360 * slot / self.slots)
+        direction = QPointF(math.cos(angle), -math.sin(angle))
+        painter.setPen(QPen(QColor('#c2ccd8'), 0.8))
+        painter.drawLine(center + direction * (radius + 3),
+                         center + direction * (radius + 8))
+        font = QFont('Segoe UI')
+        font.setPixelSize(int(max(8, min(12, 2 * math.pi * (radius + 18) / self.slots * 0.55))))
+        painter.setFont(font)
+        painter.setPen(QColor('#4e6075'))
+        point = center + direction * (radius + 20)
+        painter.drawText(QRectF(point.x() - 14, point.y() - 9, 28, 18),
+                         Qt.AlignCenter, str(slot + 1))
+
+    def _draw_center_label(self, painter, center, bore):
+        width = bore * 1.74
+        area = QRectF(center.x() - width / 2, center.y() - 42, width, 84)
+        font = QFont('Segoe UI')
+        font.setPixelSize(14)
+        font.setBold(True)
+        painter.setFont(font)
+        painter.setPen(QColor('#b34452') if self.winding_error else QColor('#263a51'))
+        title = 'Invalid winding' if self.winding_error else (
+            'Double layer' if self.is_double_layer else 'Single layer')
+        painter.drawText(QRectF(area.x(), area.y(), width, 24), Qt.AlignCenter, title)
+        font.setPixelSize(11)
+        font.setBold(False)
+        painter.setFont(font)
+        painter.setPen(QColor('#6a7c91'))
+        text = self.winding_error or (
+            f'{self.slots} slots · {self.poles} poles\nCoil span {self.coil_span} slots')
+        painter.drawText(QRectF(area.x(), area.y() + 29, width, max(64, bore * 0.85)),
+                         Qt.AlignHCenter | Qt.AlignTop | Qt.TextWordWrap, text)
 
     def _draw_legend(self, painter):
-        legend_x = self.width() - 120
-        legend_y = 20
-
-        painter.setPen(QPen(Qt.black))
-        for i, phase in enumerate(('A', 'B', 'C')):
+        font = QFont('Segoe UI')
+        font.setPixelSize(15)
+        font.setBold(True)
+        painter.setFont(font)
+        painter.setPen(QColor('#263a51'))
+        painter.drawText(QRectF(16, 10, 165, 27), Qt.AlignVCenter, 'Stator winding')
+        font.setPixelSize(11)
+        font.setBold(False)
+        painter.setFont(font)
+        painter.setPen(QColor('#6a7c91'))
+        x = self.width() - 178
+        painter.drawText(QRectF(x, 12, 43, 24), Qt.AlignVCenter, 'Phases')
+        for index, phase in enumerate('ABC'):
+            dot = QPointF(x + 54 + index * 41, 24)
+            painter.setPen(Qt.NoPen)
             painter.setBrush(PHASE_COLORS[phase])
-            painter.drawEllipse(legend_x, legend_y + i * LEGEND_ROW_SPACING_PX,
-                                LEGEND_SYMBOL_SIZE_PX, LEGEND_SYMBOL_SIZE_PX)
-            painter.setPen(QPen(Qt.black))
-            painter.drawText(
-                legend_x + LEGEND_SYMBOL_SIZE_PX + 5,
-                legend_y + i * LEGEND_ROW_SPACING_PX + LEGEND_SYMBOL_SIZE_PX - 2,
-                f"Phase {phase}")
+            painter.drawEllipse(dot, 4.5, 4.5)
+            painter.setPen(QColor('#43566e'))
+            painter.drawText(QRectF(dot.x() + 10, 12, 20, 24), Qt.AlignVCenter, phase)
+
+        y = self.height() - 36
+        start = (self.width() - 324) / 2
+        painter.setPen(QColor('#6a7c91'))
+        painter.drawText(QRectF(start, y - 9, 104, 20), Qt.AlignVCenter, 'Reference polarity')
+        for offset, sign, label in ((114, 1, 'Out of plane'), (228, -1, 'Into plane')):
+            self._draw_conductor(painter, QPointF(start + offset, y), 5.0,
+                                 QColor('#5d7087'), sign)
+            painter.setPen(QColor('#6a7c91'))
+            painter.drawText(QRectF(start + offset + 11, y - 9, 95, 20), Qt.AlignVCenter, label)
+        if self.is_double_layer:
+            font.setPixelSize(10)
+            painter.setFont(font)
+            painter.drawText(QRectF(10, self.height() - 21, self.width() - 20, 18),
+                             Qt.AlignCenter, 'Inner conductor = top layer · Outer conductor = bottom layer')
+
+    def mouseMoveEvent(self, event):
+        center, radius = self._drawing_geometry()
+        dx, dy = event.pos().x() - center.x(), center.y() - event.pos().y()
+        angle = math.degrees(math.atan2(dy, dx)) % 360
+        slot = int(round(angle * self.slots / 360)) % self.slots
+        slot_angle = math.radians(360 * slot / self.slots)
+        local = QPointF(dx * math.cos(slot_angle) + dy * math.sin(slot_angle),
+                        dx * math.sin(slot_angle) - dy * math.cos(slot_angle))
+        if not self._slot_shape(radius).contains(local):
+            slot = None
+        if slot != self._hovered_slot:
+            self._hovered_slot = slot
+            self.update()
+            if slot is not None and self.winding_matrix is not None:
+                lines = [f'Slot {slot + 1}']
+                for layer in range(2 if self.is_double_layer else 1):
+                    phase, sign = self._coil_side(slot, layer)
+                    name = ('Top' if layer == 0 else 'Bottom') if self.is_double_layer else 'Coil side'
+                    direction = '+z, out of plane' if sign > 0 else '−z, into plane'
+                    lines.append(f'{name} · Phase {phase} · {direction}')
+                QToolTip.showText(event.globalPos(), '\n'.join(lines), self)
+            else:
+                QToolTip.hideText()
+        super().mouseMoveEvent(event)
+
+    def leaveEvent(self, event):
+        self._hovered_slot = None
+        QToolTip.hideText()
+        self.update()
+        super().leaveEvent(event)

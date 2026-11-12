@@ -7,14 +7,16 @@ import pandas as pd
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtWidgets import (QCheckBox, QDialog, QDoubleSpinBox, QFileDialog,
-                             QFrame, QGroupBox, QHBoxLayout, QHeaderView,
-                             QLabel, QPushButton, QSpinBox, QStyleFactory,
+from PyQt5.QtWidgets import (QCheckBox, QComboBox, QDialog, QDoubleSpinBox, QFileDialog,
+                             QFrame, QGroupBox,
+                             QHBoxLayout, QHeaderView, QLabel, QPushButton,
+                             QSpinBox, QStyleFactory,
                              QTableWidget, QTableWidgetItem, QVBoxLayout,
                              QWidget)
 
 from core.mmf_engine import DOUBLE_LAYER_ROWS, MMFCalculationEngine
-from ui.theme import DOUBLE_SPIN_BOX_STYLE, MATRIX_DIALOG_STYLE, SPIN_BOX_STYLE
+from ui.theme import (DOUBLE_SPIN_BOX_STYLE, MATRIX_DIALOG_STYLE, SPIN_BOX_STYLE,
+                      badge_style)
 from utils.constants import (ANIMATION_FRAME_INTERVAL_MS,
                              ANIMATION_SPEED_STEPS_DEG,
                              DEFAULT_ANIMATION_SPEED,
@@ -50,9 +52,10 @@ class ResultantAnimationWindow(QDialog):
         self.is_paused = False
 
         self.setWindowTitle("Resultant MMF Animation - Wt Variable")
-        self.setGeometry(100, 100, 1400, 800)
+        self.setGeometry(80, 80, 1180, 720)
 
         self._init_ui()
+        self.plot_resultant()
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.update_animation)
         self.timer.start(ANIMATION_FRAME_INTERVAL_MS)
@@ -139,6 +142,8 @@ class ResultantAnimationWindow(QDialog):
     def plot_resultant(self):
         profile = self.mmf_engine.compute_resultant_profile(self.current_wt)
         if profile is None:
+            self._resultant_line.set_data([], [])
+            self.canvas.draw_idle()
             return
 
         angles, values = profile
@@ -155,6 +160,7 @@ class ResultantAnimationWindow(QDialog):
         self.current_wt = 0.0
         self.wt_label.setText(f"Current Wt: {self.current_wt:.1f}°")
         self.set_speed(DEFAULT_ANIMATION_SPEED)
+        self.plot_resultant()
 
     def closeEvent(self, event):
         self.timer.stop()
@@ -171,6 +177,7 @@ class ConnectionMatrixTab(QWidget):
         self.animation_window = None
         self.mmf_calculator = MMFCalculationEngine()
         self._plot_timer = None
+        self._winding_error = None
 
         self.canvas = FigureCanvas(Figure(figsize=(10, 4)))
         self.fig = self.canvas.figure
@@ -195,13 +202,11 @@ class ConnectionMatrixTab(QWidget):
         layout.addWidget(self._build_control_panel())
 
     def _build_control_panel(self):
-        """Two rows: parameter groups on top, actions below (fits small
-        windows without clipping the group contents)."""
+        """Two horizontal control rows below the full-width MMF plot."""
         control_panel = QWidget()
         panel_layout = QVBoxLayout(control_panel)
         panel_layout.setContentsMargins(10, 4, 10, 8)
         panel_layout.setSpacing(8)
-
         groups_layout = QHBoxLayout()
         groups_layout.setSpacing(12)
         groups_layout.addWidget(self._build_phase_group())
@@ -212,6 +217,13 @@ class ConnectionMatrixTab(QWidget):
 
         buttons_layout = QHBoxLayout()
         buttons_layout.setSpacing(10)
+        self.phase_view_combo = QComboBox()
+        self.phase_view_combo.addItems(['Instantaneous phases', 'Peak phase references'])
+        self.phase_view_combo.setToolTip(
+            'Instantaneous phase contributions use the configured Wt. '
+            'Peak references show each phase at its positive peak current.')
+        self.phase_view_combo.currentIndexChanged.connect(self._schedule_plot)
+        buttons_layout.addWidget(self.phase_view_combo)
         buttons_layout.addStretch()
 
         reset_btn = QPushButton("Reset")
@@ -241,7 +253,7 @@ class ConnectionMatrixTab(QWidget):
         buttons_layout.addWidget(resultant_anim_btn)
 
         matrix_btn = QPushButton("Matrix")
-        matrix_btn.setObjectName("primaryButton")
+        matrix_btn.setObjectName('primaryButton')
         matrix_btn.setToolTip("Show the phase/slot connection matrix.")
         matrix_btn.clicked.connect(self.show_matrix_window)
         matrix_btn.setMinimumHeight(35)
@@ -284,7 +296,7 @@ class ConnectionMatrixTab(QWidget):
         self.phase_linewidth_spin.setStyleSheet(SPIN_BOX_STYLE)
         self.phase_linewidth_spin.valueChanged.connect(self._schedule_plot)
 
-        linewidth_layout.addWidget(QLabel("Phases:"))
+        linewidth_layout.addWidget(QLabel('Phases:'))
         linewidth_layout.addWidget(self.phase_linewidth_spin)
         return linewidth_group
 
@@ -298,8 +310,10 @@ class ConnectionMatrixTab(QWidget):
         self.turns_spin.setRange(*TURNS_RANGE)
         self.turns_spin.setValue(DEFAULT_TURNS)
         self.turns_spin.setStyleSheet(SPIN_BOX_STYLE)
+        self.turns_spin.setToolTip(
+            'Turns parameter multiplying each occupied coil-side current.')
         self.turns_spin.valueChanged.connect(self.update_turns)
-        params_layout.addWidget(QLabel("N:"))
+        params_layout.addWidget(QLabel('N:'))
         params_layout.addWidget(self.turns_spin)
 
         self.current_spin = QDoubleSpinBox()
@@ -308,8 +322,10 @@ class ConnectionMatrixTab(QWidget):
         self.current_spin.setDecimals(3)
         self.current_spin.setSuffix(" A")
         self.current_spin.setStyleSheet(DOUBLE_SPIN_BOX_STYLE)
+        self.current_spin.setToolTip(
+            'Peak current parameter. A double-layer winding uses I/2 in each layer.')
         self.current_spin.valueChanged.connect(self.update_current)
-        params_layout.addWidget(QLabel("I:"))
+        params_layout.addWidget(QLabel('I:'))
         params_layout.addWidget(self.current_spin)
 
         self.wt_spin = QSpinBox()
@@ -317,8 +333,11 @@ class ConnectionMatrixTab(QWidget):
         self.wt_spin.setValue(DEFAULT_WT_ANGLE_DEG)
         self.wt_spin.setSuffix("°")
         self.wt_spin.setStyleSheet(SPIN_BOX_STYLE)
+        self.wt_spin.setToolTip(
+            'Electrical angle. Phase factors are sin(Wt), sin(Wt+120), '
+            'sin(Wt-120). Increasing Wt advances the resultant clockwise.')
         self.wt_spin.valueChanged.connect(self.update_wt_angle)
-        params_layout.addWidget(QLabel("Wt:"))
+        params_layout.addWidget(QLabel('Wt:'))
         params_layout.addWidget(self.wt_spin)
 
         return params_group
@@ -332,13 +351,13 @@ class ConnectionMatrixTab(QWidget):
         self.slot_arc_spin = QDoubleSpinBox()
         self.slot_arc_spin.setMinimum(0.5)
         self.slot_arc_spin.setSingleStep(0.5)
-        self.slot_arc_spin.setValue(5)  # replaced on first update_matrix call
+        self.slot_arc_spin.setValue(default_slot_arc_deg(DEFAULT_NUM_SLOTS))
         self.slot_arc_spin.setSuffix("°")
         self.slot_arc_spin.setDecimals(2)
         self.slot_arc_spin.setStyleSheet(DOUBLE_SPIN_BOX_STYLE)
         self.slot_arc_spin.valueChanged.connect(self.update_slot_arc)
 
-        slot_arc_layout.addWidget(QLabel("Angle:"))
+        slot_arc_layout.addWidget(QLabel('Angle:'))
         slot_arc_layout.addWidget(self.slot_arc_spin)
         return slot_arc_group
 
@@ -360,17 +379,20 @@ class ConnectionMatrixTab(QWidget):
         self.mmf_calculator.update_wt_angle(self.wt_spin.value())
         self._schedule_plot()
 
-    def update_matrix(self, winding_pattern, is_double_layer, poles):
+    def update_matrix(self, winding_pattern, is_double_layer, poles, coil_span=None):
         """Rebuild the connection matrix from main-tab winding parameters."""
-        self.matrix = self.mmf_calculator.update_matrix_from_parameters(
-            winding_pattern, is_double_layer, poles)
+        try:
+            self.matrix = self.mmf_calculator.update_matrix_from_parameters(
+                winding_pattern, is_double_layer, poles, coil_span=coil_span)
+        except ValueError as error:
+            self.invalidate_winding(str(error))
+            return
 
         if self.matrix is not None:
+            self._winding_error = None
             n_slots = self.matrix.shape[1]
             max_arc = max_slot_arc_deg(n_slots)
             self.slot_arc_spin.setMaximum(max_arc)
-            self.slot_arc_spin.setValue(
-                min(default_slot_arc_deg(n_slots), max_arc))
 
             # Push the current UI values into the engine.
             self.mmf_calculator.update_slot_arc(self.slot_arc_spin.value())
@@ -378,6 +400,17 @@ class ConnectionMatrixTab(QWidget):
             self.mmf_calculator.update_current(self.current_spin.value())
             self.mmf_calculator.update_wt_angle(self.wt_spin.value())
 
+        self.update_plot()
+
+    def invalidate_winding(self, message):
+        self.matrix = None
+        self.mmf_calculator.matrix = None
+        self.mmf_calculator.profiles.clear()
+        self.mmf_calculator._tooth_mmf_base = None
+        self._winding_error = message
+        if self.main_window is not None:
+            self.main_window.feasibility_label.setText(f'INVALID WINDING\n{message}')
+            self.main_window.feasibility_label.setStyleSheet(badge_style('error'))
         self.update_plot()
 
     # ---------------------------------------------------------------- plots
@@ -390,10 +423,16 @@ class ConnectionMatrixTab(QWidget):
                                in self.phase_checkboxes.items()
                                if checkbox.isChecked()]
             self._plot_selected_phases(selected_phases)
+        elif self._winding_error:
+            self.ax.text(0.5, 0.5, self._winding_error, transform=self.ax.transAxes,
+                         ha='center', va='center', wrap=True)
 
         self.ax.set_xlabel('Mechanical Angle [degrees]')
         self.ax.set_ylabel('MMF [A·t]')
-        self.ax.set_title('MMF Distribution')
+        instantaneous = self.phase_view_combo.currentIndex() == 0
+        title = (f'Instantaneous MMF at Wt = {self.wt_spin.value()}°'
+                 if instantaneous else 'Peak-current phase MMF references')
+        self.ax.set_title(title)
         self.ax.grid(True)
         self.ax.set_xlim(0, 360)
 
@@ -408,20 +447,23 @@ class ConnectionMatrixTab(QWidget):
     def _plot_selected_phases(self, selected_phases):
         linewidth = self.phase_linewidth_spin.value()
         layer_type = 'sum' if self._is_double_layer() else None
+        wt = self.wt_spin.value()
+        instantaneous = self.phase_view_combo.currentIndex() == 0
 
         for phase in selected_phases:
-            angles, values = self.mmf_calculator.get_profile_data(phase, layer_type)
+            angles, values = self.mmf_calculator.get_profile_data(
+                phase, layer_type, wt_deg=wt if instantaneous else None)
             if angles is not None:
                 color, linestyle = PHASE_PLOT_STYLES[phase]
-                self.ax.plot(angles, values, label=f'Phase {phase}',
+                label = f'Phase {phase}' if instantaneous else f'Phase {phase} (peak)'
+                self.ax.plot(angles, values, label=label,
                              color=color, linestyle=linestyle, linewidth=linewidth)
 
         if self.resultant_checkbox.isChecked():
             angles, values = self.mmf_calculator.get_profile_data('resultant')
             if angles is not None:
                 wt = self.wt_spin.value()
-                label = (f'Resultant A*sin({wt}°)+B*sin({wt + 120}°)'
-                         f'+C*sin({wt - 120}°)')
+                label = f'Resultant at Wt = {wt}°'
                 self.ax.plot(angles, values, label=label, color='black',
                              linestyle='-', linewidth=linewidth + 1)
 
@@ -509,6 +551,7 @@ class ConnectionMatrixTab(QWidget):
         for checkbox in self.phase_checkboxes.values():
             checkbox.setChecked(True)
         self.resultant_checkbox.setChecked(False)
+        self.phase_view_combo.setCurrentIndex(0)
         self.phase_linewidth_spin.setValue(DEFAULT_PHASE_LINEWIDTH)
 
         n_slots = (self.matrix.shape[1] if self.matrix is not None
@@ -540,8 +583,10 @@ class ConnectionMatrixTab(QWidget):
 
             layer_str = ("double_layer_sum" if self._is_double_layer()
                          else "single_layer")
+            view_str = (f'instantaneous_Wt{self.wt_spin.value()}'
+                        if self.phase_view_combo.currentIndex() == 0 else 'peak_reference')
             filename = (f"{n_slots}slots_{self._pair_poles_value()}pairpoles_"
-                        f"{phases_str}_{layer_str}.png")
+                        f"{phases_str}_{layer_str}_{view_str}.png")
 
             save_path, _ = QFileDialog.getSaveFileName(
                 self, "Save Plot", filename,
@@ -599,11 +644,7 @@ def setup_connection_matrix_tab(main_window):
         main_window.connection_tab.update_matrix(
             main_window.stator_drawing.winding_pattern,
             main_window.stator_drawing.is_double_layer,
-            actual_poles)
+            actual_poles, coil_span=main_window.span_spin.value())
 
     sync_with_winding_tab()
 
-    # Refresh whenever the user switches to this tab.
-    main_window.tabs.currentChanged.connect(
-        lambda index: sync_with_winding_tab()
-        if main_window.tabs.tabText(index) == "MMF Curves" else None)

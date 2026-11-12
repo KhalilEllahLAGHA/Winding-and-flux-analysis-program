@@ -8,22 +8,26 @@ against a FEMM validation run.
 import csv
 import json
 import logging
-import os
-import shutil
-import subprocess
+import sys
+from datetime import datetime
+from uuid import uuid4
 
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
-from PyQt5.QtCore import QRectF, QTimer
+from PyQt5.QtCore import QProcess, QRectF, QSize, QTimer, Qt
 from PyQt5.QtWidgets import (QApplication, QCheckBox, QComboBox, QFileDialog,
                              QFormLayout, QGroupBox, QHBoxLayout, QLabel,
                              QLineEdit, QMessageBox, QProgressBar, QPushButton,
-                             QSpinBox, QStackedWidget, QTabWidget, QVBoxLayout,
+                             QScrollArea, QSizePolicy, QSpinBox, QStackedWidget, QTabWidget, QVBoxLayout,
                              QWidget)
 
 from core.flux_solver import FluxCalculator
+from core.femm_runner import parse_validation_results
+from core.femm_validation import (airgap_profile, airgap_samples,
+                                  build_validation_script, compare_airgap_profiles,
+                                  compute_reference_metrics)
 from core.reluctance_calculator import ReluctanceCalculator
 from core.teeth_slot_mmf import TeethSlotMMFCalculator
 from ui.flux_visualization import (generate_flux_density_heatmap,
@@ -35,8 +39,7 @@ from ui.theme import (FLUX_DENSITY_PAGE_STYLE, PAGE_SUBTITLE_STYLE,
 from utils.constants import (DEFAULT_AXIAL_LENGTH_MM,
                              DEFAULT_RELATIVE_PERMEABILITIES,
                              DEFAULT_WT_ANGLE_DEG)
-from utils.paths import (FEMM_VALIDATION_RESULTS, FEMM_VALIDATION_SCRIPT,
-                         PROJECT_ROOT)
+from utils.paths import FEMM_VALIDATION_DIR, PROJECT_ROOT
 
 try:
     import pyqtgraph as pg
@@ -71,6 +74,8 @@ class FluxDensityHeatmapUI:
         self.reluctance_results = None
         self.mmf_results = None
         self.flux_results = None
+        self.femm_process = None
+        self._femm_run = None
 
         self.animation_frames = []
         self.animation_frame_index = 0
@@ -100,8 +105,18 @@ class FluxDensityHeatmapUI:
         widget.setStyleSheet(FLUX_DENSITY_PAGE_STYLE)
 
         main_layout = QHBoxLayout(widget)
-        main_layout.addLayout(self._build_left_panel(), 3)
-        main_layout.addWidget(self._build_right_panel(widget), 5)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(14)
+        inspector = QWidget()
+        inspector.setLayout(self._build_left_panel())
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setFrameShape(QScrollArea.NoFrame)
+        scroll.setFixedWidth(340)
+        scroll.setWidget(inspector)
+        main_layout.addWidget(scroll)
+        main_layout.addWidget(self._build_right_panel(widget), 1)
 
         self.main_window.flux_density_page_ui = self
         return widget
@@ -112,28 +127,27 @@ class FluxDensityHeatmapUI:
         left_panel.setContentsMargins(4, 4, 8, 4)
         left_panel.setSpacing(12)
 
-        title = QLabel("Step 3: Flux Density Analysis")
+        title = QLabel("Field analysis")
         title.setStyleSheet(PAGE_TITLE_STYLE)
         left_panel.addWidget(title)
 
-        subtitle = QLabel("Run the flux calculation, then explore "
-                          "visualisations, statistics, and animations.")
+        subtitle = QLabel("Solve the field, inspect its values and compare with FEMM.")
         subtitle.setStyleSheet(PAGE_SUBTITLE_STYLE)
         subtitle.setWordWrap(True)
         left_panel.addWidget(subtitle)
 
         window.flux_tabs = QTabWidget()
         window.flux_tabs.addTab(self._create_material_properties_tab(),
-                                "Material Properties")
+                                "Materials")
         window.flux_tabs.addTab(self._create_analysis_statistics_tab(),
-                                "Analysis Statistics")
+                                "Statistics")
         window.flux_tabs.addTab(self._create_animation_tab(), "Animation")
-        left_panel.addWidget(window.flux_tabs)
+        window.flux_tabs.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
 
-        controls_group = QGroupBox("Analysis Controls")
+        controls_group = QGroupBox("Solve and validate")
         controls_layout = QVBoxLayout(controls_group)
 
-        window.flux_calculate_btn = QPushButton("Calculate")
+        window.flux_calculate_btn = QPushButton("Solve field")
         window.flux_calculate_btn.setObjectName("primaryButton")
         window.flux_calculate_btn.setMinimumHeight(36)
         window.flux_calculate_btn.setToolTip(
@@ -142,28 +156,34 @@ class FluxDensityHeatmapUI:
         window.flux_calculate_btn.clicked.connect(self.flux_calculate)
         controls_layout.addWidget(window.flux_calculate_btn)
 
-        window.flux_export_all_btn = QPushButton("Export All Results")
+        secondary_actions = QHBoxLayout()
+        window.flux_export_all_btn = QPushButton("Export results")
         window.flux_export_all_btn.setMinimumHeight(35)
         window.flux_export_all_btn.clicked.connect(self.export_all_results)
         window.flux_export_all_btn.setEnabled(False)
-        controls_layout.addWidget(window.flux_export_all_btn)
+        secondary_actions.addWidget(window.flux_export_all_btn)
 
         window.flux_visualization_type = QComboBox()
         window.flux_visualization_type.addItems(VISUALISATION_MODES)
-        controls_layout.addWidget(window.flux_visualization_type)
+        window.flux_visualization_type.setCurrentIndex(2)
+        window.flux_visualization_type.currentIndexChanged.connect(self._schedule_field_redraw)
 
         window.flux_generate_visualisation_btn = QPushButton(
-            "Generate Visualisation")
+            "Refresh view")
         window.flux_generate_visualisation_btn.setMinimumHeight(35)
         window.flux_generate_visualisation_btn.clicked.connect(
             self.generate_visualisation)
         window.flux_generate_visualisation_btn.setEnabled(False)
-        controls_layout.addWidget(window.flux_generate_visualisation_btn)
 
-        window.flux_femm_validation_btn = QPushButton("Validation using FEMM")
+        window.flux_femm_validation_btn = QPushButton("Validate in FEMM")
         window.flux_femm_validation_btn.setMinimumHeight(35)
+        window.flux_femm_validation_btn.setToolTip(
+            "Recalculate this model and compare its air-gap B and radial "
+            "sector flux against an independent FEMM solve. Keep FEMM open "
+            "with the flux-density map, field lines and values.")
         window.flux_femm_validation_btn.clicked.connect(self.run_femm_validation)
-        controls_layout.addWidget(window.flux_femm_validation_btn)
+        secondary_actions.addWidget(window.flux_femm_validation_btn)
+        controls_layout.addLayout(secondary_actions)
 
         left_panel.addWidget(controls_group)
 
@@ -175,8 +195,11 @@ class FluxDensityHeatmapUI:
         window.flux_status_label.setWordWrap(True)
         set_status(window.flux_status_label, "", 'muted')
         left_panel.addWidget(window.flux_status_label)
-
-        left_panel.addStretch()
+        window.flux_contour_label = QLabel("")
+        window.flux_contour_label.setWordWrap(True)
+        window.flux_contour_label.setStyleSheet(PAGE_SUBTITLE_STYLE)
+        left_panel.addWidget(window.flux_contour_label)
+        left_panel.addWidget(window.flux_tabs, 1)
         return left_panel
 
     def _build_right_panel(self, parent_widget):
@@ -185,8 +208,28 @@ class FluxDensityHeatmapUI:
         self._setup_flux_density_visualization()
 
         right_panel = QVBoxLayout()
+        right_panel.setContentsMargins(12, 12, 12, 10)
+        right_panel.setSpacing(8)
+        display_controls = QHBoxLayout()
+        display_controls.addWidget(QLabel("Display"))
+        display_controls.addWidget(window.flux_visualization_type)
+        display_controls.addStretch()
+        display_controls.addWidget(QLabel("Contours"))
+        window.flux_contour_count = QSpinBox()
+        window.flux_contour_count.setRange(4, 100)
+        window.flux_contour_count.setValue(36)
+        window.flux_contour_count.setToolTip(
+            'Equally spaced magnetic vector-potential contours. '
+            'Each interval represents the same magnetic flux.')
+        window.flux_contour_count.setFixedWidth(88)
+        window.flux_contour_count.valueChanged.connect(self._schedule_field_redraw)
+        display_controls.addWidget(window.flux_contour_count)
+        display_controls.addWidget(window.flux_generate_visualisation_btn)
+        right_panel.addLayout(display_controls)
         window.flux_density_toolbar = NavigationToolbar(
             window.flux_density_canvas, parent_widget)
+        window.flux_density_toolbar.setIconSize(QSize(18, 18))
+        window.flux_density_toolbar.setFixedHeight(34)
         right_panel.addWidget(window.flux_density_toolbar)
 
         window.flux_display_stack = QStackedWidget()
@@ -195,9 +238,60 @@ class FluxDensityHeatmapUI:
             window.flux_display_stack.addWidget(window.flux_anim_pg_widget)
         right_panel.addWidget(window.flux_display_stack)
 
+        window.flux_probe_label = QLabel("Click the field to inspect flux density.")
+        window.flux_probe_label.setWordWrap(True)
+        window.flux_probe_label.setStyleSheet(PAGE_SUBTITLE_STYLE)
+        right_panel.addWidget(window.flux_probe_label)
+        window.flux_density_canvas.mpl_connect('button_press_event', self._inspect_field_point)
+
         right_widget = QWidget()
+        right_widget.setObjectName('fieldViewCard')
+        right_widget.setStyleSheet(
+            'QWidget#fieldViewCard { border: 1px solid #343e4a; border-radius: 10px; }')
         right_widget.setLayout(right_panel)
         return right_widget
+
+    def _schedule_field_redraw(self):
+        if not hasattr(self, '_field_redraw_timer'):
+            self._field_redraw_timer = QTimer(self.main_window)
+            self._field_redraw_timer.setSingleShot(True)
+            self._field_redraw_timer.timeout.connect(self.generate_visualisation)
+        if self.flux_results:
+            self._field_redraw_timer.start(120)
+
+    def _inspect_field_point(self, event):
+        window = self.main_window
+        if (event.inaxes is not window.flux_density_ax or event.button != 1
+                or event.xdata is None or event.ydata is None
+                or window.flux_density_toolbar.mode or not self.flux_results):
+            return
+        radius = float(np.hypot(event.xdata, event.ydata))
+        angle = float(np.degrees(np.arctan2(event.ydata, event.xdata)) % 360)
+        mesh = self._mesh_data()
+        if not mesh:
+            return
+        for element in mesh['mesh_elements']:
+            if (element['rin'] <= radius <= element['rout']
+                    and element['theta_start'] <= angle < element['theta_end']):
+                eid = element.get('element_id', element.get('id'))
+                values = self.flux_results['flux_densities'].get(eid)
+                if values is None:
+                    values = self.flux_results['flux_densities'].get(str(eid))
+                if values is None:
+                    return
+                window.flux_probe_label.setText(
+                    f"r {radius:.2f} mm  ·  θ {angle:.1f}°  ·  "
+                    f"|B| {values['B_magnitude']:.4f} T  ·  "
+                    f"Br {values['Br']:.4f} T  ·  Bθ {values['Btheta']:.4f} T")
+                marker = getattr(self, '_probe_marker', None)
+                if marker is not None:
+                    marker.remove()
+                self._probe_marker, = window.flux_density_ax.plot(
+                    [event.xdata], [event.ydata], 'o', markersize=5,
+                    markerfacecolor='#4f8cff', markeredgecolor='white', zorder=9)
+                window.flux_density_canvas.draw_idle()
+                return
+        window.flux_probe_label.setText('Select a point inside the solved machine region.')
 
     def _create_material_properties_tab(self):
         window = self.main_window
@@ -206,20 +300,22 @@ class FluxDensityHeatmapUI:
 
         material_group = QGroupBox("Material Permeabilities")
         material_layout = QFormLayout(material_group)
+        material_layout.setRowWrapPolicy(QFormLayout.WrapLongRows)
 
         defaults = DEFAULT_RELATIVE_PERMEABILITIES
         window.flux_ur_stator = QLineEdit(str(int(defaults['ur_stator'])))
         window.flux_ur_rotor = QLineEdit(str(int(defaults['ur_rotor'])))
 
-        material_layout.addRow("Stator Steel μr:", window.flux_ur_stator)
-        material_layout.addRow("Rotor Steel μr:", window.flux_ur_rotor)
+        material_layout.addRow("Stator μr", window.flux_ur_stator)
+        material_layout.addRow("Rotor μr", window.flux_ur_rotor)
         layout.addWidget(material_group)
 
         machine_group = QGroupBox("Machine Parameters")
         machine_layout = QFormLayout(machine_group)
+        machine_layout.setRowWrapPolicy(QFormLayout.WrapLongRows)
 
         window.flux_calc_axial_length = QLineEdit(str(int(DEFAULT_AXIAL_LENGTH_MM)))
-        machine_layout.addRow("Axial Length (mm):", window.flux_calc_axial_length)
+        machine_layout.addRow("Axial length [mm]", window.flux_calc_axial_length)
         layout.addWidget(machine_group)
 
         layout.addStretch()
@@ -232,13 +328,13 @@ class FluxDensityHeatmapUI:
 
         stats_group = QGroupBox("Analysis Statistics")
         stats_layout = QFormLayout(stats_group)
+        stats_layout.setRowWrapPolicy(QFormLayout.WrapLongRows)
 
         region_layout = QHBoxLayout()
         window.flux_region_selector = QComboBox()
         window.flux_region_selector.addItems(ANALYSIS_REGIONS)
         window.flux_region_selector.currentTextChanged.connect(
             self.update_regional_statistics)
-        region_layout.addWidget(QLabel("Region:"))
         region_layout.addWidget(window.flux_region_selector)
         region_layout.addStretch()
 
@@ -247,13 +343,17 @@ class FluxDensityHeatmapUI:
         window.flux_max_flux_label = QLabel("Not calculated")
         window.flux_avg_flux_label = QLabel("Not calculated")
         window.flux_max_br_airgap_label = QLabel("Not calculated")
+        for value in (window.flux_br_max_label, window.flux_br_avg_label,
+                      window.flux_max_flux_label, window.flux_avg_flux_label,
+                      window.flux_max_br_airgap_label):
+            value.setWordWrap(True)
 
         stats_layout.addRow("Analysis Region:", region_layout)
-        stats_layout.addRow("Br Max (Region):", window.flux_br_max_label)
-        stats_layout.addRow("Br Avg Excited (Region):", window.flux_br_avg_label)
-        stats_layout.addRow("Flux Max (Region):", window.flux_max_flux_label)
-        stats_layout.addRow("Flux Avg Excited (Region):", window.flux_avg_flux_label)
-        stats_layout.addRow("Max Br in Air Gap:", window.flux_max_br_airgap_label)
+        stats_layout.addRow("Peak |Br|", window.flux_br_max_label)
+        stats_layout.addRow("Mean excited |Br|", window.flux_br_avg_label)
+        stats_layout.addRow("Peak branch flux", window.flux_max_flux_label)
+        stats_layout.addRow("Mean excited branch flux", window.flux_avg_flux_label)
+        stats_layout.addRow("Air-gap peak |Br|", window.flux_max_br_airgap_label)
 
         layout.addWidget(stats_group)
         layout.addStretch()
@@ -266,6 +366,7 @@ class FluxDensityHeatmapUI:
 
         settings_group = QGroupBox("Animation Settings")
         settings_layout = QFormLayout(settings_group)
+        settings_layout.setRowWrapPolicy(QFormLayout.WrapLongRows)
 
         window.flux_anim_visualization_type = QComboBox()
         window.flux_anim_visualization_type.addItems(VISUALISATION_MODES)
@@ -296,7 +397,8 @@ class FluxDensityHeatmapUI:
             "color: #aaaaaa; font-size: 12px;")
         layout.addWidget(window.flux_anim_info_label)
 
-        buttons_layout = QHBoxLayout()
+        buttons_layout = QVBoxLayout()
+        playback_layout = QHBoxLayout()
 
         window.flux_prepare_anim_btn = QPushButton("Generate Frames")
         window.flux_prepare_anim_btn.clicked.connect(self.prepare_animation_frames)
@@ -306,17 +408,18 @@ class FluxDensityHeatmapUI:
         window.flux_play_anim_btn = QPushButton("Play")
         window.flux_play_anim_btn.clicked.connect(self.play_animation)
         window.flux_play_anim_btn.setEnabled(False)
-        buttons_layout.addWidget(window.flux_play_anim_btn)
+        playback_layout.addWidget(window.flux_play_anim_btn)
 
         window.flux_pause_anim_btn = QPushButton("Pause")
         window.flux_pause_anim_btn.clicked.connect(self.pause_animation)
         window.flux_pause_anim_btn.setEnabled(False)
-        buttons_layout.addWidget(window.flux_pause_anim_btn)
+        playback_layout.addWidget(window.flux_pause_anim_btn)
 
         window.flux_stop_anim_btn = QPushButton("Stop")
         window.flux_stop_anim_btn.clicked.connect(self.stop_animation)
         window.flux_stop_anim_btn.setEnabled(False)
-        buttons_layout.addWidget(window.flux_stop_anim_btn)
+        playback_layout.addWidget(window.flux_stop_anim_btn)
+        buttons_layout.addLayout(playback_layout)
 
         layout.addLayout(buttons_layout)
         layout.addStretch()
@@ -328,7 +431,7 @@ class FluxDensityHeatmapUI:
             figsize=(8, 8))
         window.flux_density_figure.patch.set_facecolor('white')
         window.flux_density_ax.set_facecolor('white')
-        window.flux_density_figure.set_tight_layout(True)
+        window.flux_density_figure.set_layout_engine('constrained')
 
         window.flux_density_canvas = FigureCanvas(window.flux_density_figure)
         self._setup_pyqtgraph_animation_view()
@@ -360,15 +463,15 @@ class FluxDensityHeatmapUI:
     def _initialize_placeholder_plot(self):
         ax = self.main_window.flux_density_ax
         ax.clear()
-        ax.text(0, 0,
-                "Flux Visualisation\n\nSelect a mode, then press "
-                "'Generate Visualisation'",
-                ha='center', va='center', fontsize=14, color='gray',
-                bbox=dict(boxstyle="round,pad=0.5", facecolor="#f0f0f0",
-                          alpha=0.8))
+        ax.text(0.5, 0.55, 'Magnetic field', transform=ax.transAxes,
+                ha='center', va='center', fontsize=20, color='#253449')
+        ax.text(0.5, 0.46, 'Generate a mesh, then select Solve field.',
+                transform=ax.transAxes, ha='center', va='center',
+                fontsize=11, color='#748297')
         ax.set_xlim(-100, 100)
         ax.set_ylim(-100, 100)
         ax.set_aspect('equal')
+        ax.set_axis_off()
         self.main_window.flux_density_canvas.draw()
 
     # -------------------------------------------------------------- pipeline
@@ -385,6 +488,12 @@ class FluxDensityHeatmapUI:
         """Run reluctance, teeth MMF, and flux calculations on the mesh."""
         window = self.main_window
         try:
+            self.flux_results = None
+            self.reluctance_results = None
+            self.mmf_results = None
+            window.flux_export_all_btn.setEnabled(False)
+            window.flux_generate_visualisation_btn.setEnabled(False)
+            window.flux_prepare_anim_btn.setEnabled(False)
             mesh_data = self._mesh_data()
             if not mesh_data:
                 self._set_status("Error: No mesh data available", 'error')
@@ -455,6 +564,7 @@ class FluxDensityHeatmapUI:
             window.flux_export_all_btn.setEnabled(True)
             window.flux_generate_visualisation_btn.setEnabled(True)
             window.flux_prepare_anim_btn.setEnabled(True)
+            self.generate_visualisation()
 
         except Exception as error:
             self._set_status(f"Calculation failed: {error}", 'error')
@@ -578,12 +688,12 @@ class FluxDensityHeatmapUI:
             window.flux_max_br_airgap_label.setText("Error calculating")
 
     def calculate_air_gap_flux_density(self):
-        """Maximum |B| over air-gap elements."""
+        """Maximum absolute radial B over air-gap elements."""
         if not self.flux_results or 'flux_densities' not in self.flux_results:
             return 0.0
 
         air_gap_b_values = [
-            density_data['B_magnitude']
+            abs(density_data['Br'])
             for density_data in self.flux_results['flux_densities'].values()
             if density_data['element_data']['material'] == 'Air Gap'
         ]
@@ -698,17 +808,22 @@ class FluxDensityHeatmapUI:
         window = self.main_window
         window.flux_density_figure.clear()
         window.flux_density_ax = window.flux_density_figure.add_subplot(111)
+        self._probe_marker = None
+        window.flux_probe_label.setText('Click the field to inspect flux density.')
 
     def _render_mode(self, mode, ax, figure, mesh_data, flux_densities,
                      branch_fluxes, machine_params):
         """Dispatch one visualisation mode onto the given axis."""
+        count_control = getattr(self.main_window, 'flux_contour_count', None)
+        contour_count = count_control.value() if count_control is not None else 36
         if mode == "Flux Lines":
             return generate_flux_lines_visualisation(
-                ax, figure, mesh_data, branch_fluxes, machine_params)
+                ax, figure, mesh_data, branch_fluxes, machine_params,
+                flux_densities=flux_densities, contour_count=contour_count)
         if mode == "Flux Line + Density":
             return generate_flux_line_density_visualisation(
                 ax, figure, mesh_data, flux_densities, branch_fluxes,
-                machine_params)
+                machine_params, contour_count=contour_count)
         return generate_flux_density_heatmap(
             ax, figure, mesh_data, flux_densities, machine_params)
 
@@ -730,6 +845,9 @@ class FluxDensityHeatmapUI:
                 self._set_status("Error: No mesh data available", 'error')
                 return
 
+            machine_params = window.meshing_page_ui.get_machine_parameters()
+            machine_params['axial_length'] = float(window.flux_calc_axial_length.text())
+
             visualisation_type = window.flux_visualization_type.currentText()
             self._set_status(
                 f"Generating {visualisation_type.lower()}...")
@@ -744,9 +862,19 @@ class FluxDensityHeatmapUI:
                 mesh_data,
                 self.flux_results.get('flux_densities', {}),
                 self.flux_results.get('branch_fluxes', {}),
-                window.meshing_page_ui.get_machine_parameters())
+                machine_params)
 
             if success:
+                info = getattr(window.flux_density_figure, '_flux_contour_info', None)
+                window.flux_contour_count.setEnabled(visualisation_type != 'B Heatmap')
+                if info and info['count']:
+                    window.flux_contour_label.setText(
+                        f"{info['count']} contours  ·  Equal flux interval "
+                        f"{info['flux_step_wb'] * 1e6:.2f} µWb")
+                elif info:
+                    window.flux_contour_label.setText('Zero magnetic flux')
+                else:
+                    window.flux_contour_label.clear()
                 window.flux_density_canvas.draw_idle()
                 self._set_status(
                     f"{visualisation_type} generated successfully!", 'success')
@@ -874,6 +1002,7 @@ class FluxDensityHeatmapUI:
                 angles = np.array([0.0], dtype=np.float64)
 
             machine_params = window.meshing_page_ui.get_machine_parameters()
+            machine_params['axial_length'] = float(window.flux_calc_axial_length.text())
             mesh_settings = window.meshing_page_ui.get_current_mesh_settings()
 
             if hasattr(window.connection_tab, 'wt_spin'):
@@ -1005,7 +1134,7 @@ class FluxDensityHeatmapUI:
         frame_figure, frame_ax = plt.subplots(
             figsize=self.animation_frame_figsize, dpi=self.animation_frame_dpi)
         frame_figure.patch.set_facecolor('white')
-        frame_figure.set_tight_layout(True)
+        frame_figure.set_layout_engine('constrained')
 
         try:
             success = self._render_mode(mode, frame_ax, frame_figure, mesh_data,
@@ -1123,184 +1252,177 @@ class FluxDensityHeatmapUI:
 
     # --------------------------------------------------------- FEMM validation
 
-    @staticmethod
-    def _locate_femm_executable():
-        """Locate femm.exe for systems without the Python femm module."""
-        env_path = os.environ.get('FEMM_EXE', '').strip()
-        if env_path and os.path.isfile(env_path):
-            return env_path
-
-        in_path = shutil.which('femm.exe')
-        if in_path:
-            return in_path
-
-        candidates = [
-            r'C:\femm42\bin\femm.exe',
-            os.path.join(os.environ.get('ProgramFiles', r'C:\Program Files'),
-                         'femm42', 'bin', 'femm.exe'),
-            os.path.join(os.environ.get('ProgramFiles(x86)',
-                                        r'C:\Program Files (x86)'),
-                         'femm42', 'bin', 'femm.exe'),
-            os.path.join(os.environ.get('LOCALAPPDATA', ''),
-                         'Programs', 'femm42', 'bin', 'femm.exe'),
-        ]
-        for candidate in candidates:
-            if candidate and os.path.isfile(candidate):
-                return candidate
-
-        return None
-
-    @staticmethod
-    def _parse_validation_results(results_path):
-        """Parse the key=value FEMM validation output file."""
-        metrics = {}
-        with open(results_path, 'r', encoding='utf-8') as results_file:
-            for raw_line in results_file:
-                line = raw_line.strip()
-                if not line or '=' not in line:
-                    continue
-
-                key, value = line.split('=', 1)
-                key = key.strip()
-                value = value.strip()
-                try:
-                    metrics[key] = float(value)
-                except ValueError:
-                    metrics[key] = value
-        return metrics
-
-    def _compute_airgap_reference_metrics(self):
-        """Current in-app air-gap metrics for the FEMM comparison."""
-        if not self.flux_results:
-            return {}
-
-        flux_densities = self.flux_results.get('flux_densities', {})
-        branch_fluxes = self.flux_results.get('branch_fluxes', {})
-
-        br_values = []
-        flux_values = []
-        for element_id, density_data in flux_densities.items():
-            if density_data.get('element_data', {}).get('material') != 'Air Gap':
-                continue
-
-            br_values.append(abs(float(density_data.get('Br', 0.0))))
-            branch_data = branch_fluxes.get(element_id, {})
-            for direction in ('up', 'down', 'left', 'right'):
-                flux_values.append(abs(float(branch_data.get(direction, 0.0))))
-
-        if not br_values and not flux_values:
-            return {}
-
-        metrics = self._abs_metrics(br_values, flux_values)
-        return {
-            'airgap_br_max_t': metrics['br_max'],
-            'airgap_br_avg_excited_t': metrics['br_avg_excited'],
-            'airgap_flux_max_wb': metrics['flux_max'],
-            'airgap_flux_avg_excited_wb': metrics['flux_avg_excited'],
-        }
-
-    def _run_femm_script(self, lua_path):
-        """Execute the validation Lua script via the femm module or femm.exe.
-
-        Returns the backend name that succeeded; raises when neither works.
-        """
-        import_failure = None
-        femm_module = None
-        try:
-            import femm as femm_module  # type: ignore
-
-            femm_module.openfemm()
-            lua_for_femm = lua_path.replace('\\', '/')
-            if not hasattr(femm_module, 'callfemm'):
-                raise RuntimeError(
-                    'Installed femm module does not expose callfemm.')
-            femm_module.callfemm(f'dofile("{lua_for_femm}")')
-            return 'python-femm'
-        except Exception as femm_error:
-            import_failure = femm_error
-        finally:
-            if femm_module is not None and hasattr(femm_module, 'closefemm'):
-                try:
-                    femm_module.closefemm()
-                except Exception:
-                    pass
-
-        femm_exe = self._locate_femm_executable()
-        if femm_exe is None:
-            raise RuntimeError(
-                'Could not run FEMM: Python femm module is unavailable and '
-                'femm.exe was not found.') from import_failure
-
-        subprocess.run(
-            [femm_exe, f'-lua-script={lua_path}', '-windowhide'],
-            cwd=str(PROJECT_ROOT), check=True, timeout=FEMM_RUN_TIMEOUT_S)
-        return 'femm-exe'
+    def _femm_input_signature(self):
+        """Detect edits made while an independent FEMM solve is running."""
+        engine = self._mmf_engine()
+        window = self.main_window
+        mesh = self._mesh_data()
+        matrix = getattr(engine, 'matrix', None)
+        return (id(mesh), repr(mesh['params']) if mesh else None,
+                (matrix.shape, matrix.tobytes()) if matrix is not None else None,
+                getattr(engine, 'turns', None),
+                getattr(engine, 'phase_current_a', None),
+                getattr(engine, 'wt_angle_deg', None),
+                repr(window.meshing_page_ui.get_current_mesh_settings()),
+                window.flux_ur_stator.text(), window.flux_ur_rotor.text(),
+                window.flux_calc_axial_length.text())
 
     def run_femm_validation(self):
-        """Run the FEMM validation and report metrics next to local results."""
+        """Recompute the active model, then run FEMM without blocking Qt."""
         window = self.main_window
+        if self.femm_process is not None or getattr(self, '_femm_preparing', False):
+            return
+        self._femm_preparing = True
         try:
-            lua_path = str(FEMM_VALIDATION_SCRIPT)
-            results_path = str(FEMM_VALIDATION_RESULTS)
-
-            if not os.path.isfile(lua_path):
-                self._set_status('FEMM validation script not found.', 'error')
-                QMessageBox.warning(window, 'Validation using FEMM',
-                                    f'Missing script:\n{lua_path}')
-                return
-
-            if os.path.isfile(results_path):
-                try:
-                    os.remove(results_path)
-                except OSError:
-                    pass
-
-            self._set_status('Running FEMM validation...')
-            QApplication.processEvents()
-
-            run_source = self._run_femm_script(lua_path)
-
-            if not os.path.isfile(results_path):
-                raise RuntimeError(
-                    'FEMM finished but validation_results.txt was not generated.')
-
-            femm_metrics = self._parse_validation_results(results_path)
-            local_metrics = self._compute_airgap_reference_metrics()
-
-            summary_lines = [
-                f'Run backend: {run_source}',
-                f'Br max (FEMM): {femm_metrics.get("airgap_br_max_t", 0.0):.6e} T',
-                f'Br avg excited (FEMM): '
-                f'{femm_metrics.get("airgap_br_avg_excited_t", 0.0):.6e} T',
-                f'Flux max (FEMM): '
-                f'{femm_metrics.get("airgap_flux_max_wb", 0.0):.6e} Wb',
-                f'Flux avg excited (FEMM): '
-                f'{femm_metrics.get("airgap_flux_avg_excited_wb", 0.0):.6e} Wb',
-            ]
-
-            if local_metrics:
-                summary_lines.extend([
-                    '',
-                    f'Br max (Current Model): '
-                    f'{local_metrics.get("airgap_br_max_t", 0.0):.6e} T',
-                    f'Br avg excited (Current Model): '
-                    f'{local_metrics.get("airgap_br_avg_excited_t", 0.0):.6e} T',
-                    f'Flux max (Current Model): '
-                    f'{local_metrics.get("airgap_flux_max_wb", 0.0):.6e} Wb',
-                    f'Flux avg excited (Current Model): '
-                    f'{local_metrics.get("airgap_flux_avg_excited_wb", 0.0):.6e} Wb',
-                ])
-
-            self._set_status(
-                'FEMM validation completed successfully.', 'success')
-            QMessageBox.information(window, 'Validation using FEMM',
-                                    '\n'.join(summary_lines))
-
-        except subprocess.TimeoutExpired:
-            self._set_status('FEMM validation timed out.', 'error')
-            QMessageBox.critical(window, 'Validation using FEMM',
-                                 'FEMM validation timed out.')
+            mesh = self._mesh_data()
+            if not mesh:
+                raise ValueError('Generate a mesh in Step 2 before validating.')
+            engine = self._mmf_engine()
+            if engine is None or engine.matrix is None:
+                raise ValueError('Generate the winding and MMF curves first.')
+            signature = self._femm_input_signature()
+            materials = {'ur_stator': float(window.flux_ur_stator.text()),
+                         'ur_rotor': float(window.flux_ur_rotor.text())}
+            length = float(window.flux_calc_axial_length.text())
+            run_dir = (FEMM_VALIDATION_DIR / 'runs'
+                       / (datetime.now().strftime('%Y%m%d-%H%M%S-')
+                          + uuid4().hex[:8]))
+            script = build_validation_script(mesh, engine, materials,
+                                              length, run_dir)
+            # Never compare FEMM to a stale solve after current/Wt/material edits.
+            self.flux_results = None
+            window.flux_femm_validation_btn.setEnabled(False)
+            self.flux_calculate()
+            if not self.flux_results:
+                raise RuntimeError(window.flux_status_label.text())
+            if signature != self._femm_input_signature():
+                raise RuntimeError('Inputs changed during the local calculation. '
+                                   'Run validation again for the new settings.')
+            local = compute_reference_metrics(
+                self.flux_results, airgap_samples(mesh), length)
+            self._femm_run = {
+                'directory': run_dir,
+                'results': run_dir / 'validation_results.txt',
+                'local': local,
+                'profile': airgap_profile(self.flux_results, airgap_samples(mesh)),
+                'signature': signature,
+                'inputs': (f'{mesh["params"]["num_slots"]} slots, '
+                           f'{engine.turns} turns, '
+                           f'{engine.phase_current_a:g} A, '
+                           f'Wt={engine.wt_angle_deg:g} deg'),
+            }
+            self.femm_process = QProcess(window)
+            self.femm_process.finished.connect(self._finish_femm_validation)
+            self.femm_process.errorOccurred.connect(self._femm_process_error)
+            self._femm_watchdog = QTimer(self.femm_process)
+            self._femm_watchdog.setSingleShot(True)
+            self._femm_watchdog.timeout.connect(self._femm_timeout)
+            self._femm_watchdog.start((FEMM_RUN_TIMEOUT_S + 15) * 1000)
+            window.flux_calculate_btn.setEnabled(False)
+            window.flux_progress_bar.setRange(0, 0)
+            window.flux_progress_bar.setVisible(True)
+            self._set_status('Running FEMM comparison for the current model...')
+            self.femm_process.setWorkingDirectory(str(PROJECT_ROOT))
+            self.femm_process.start(sys.executable, [
+                '-u', str(PROJECT_ROOT / 'tools' / 'femm_check.py'),
+                '--script', str(script),
+                '--results', str(self._femm_run['results']),
+                '--timeout', str(FEMM_RUN_TIMEOUT_S), '--keep-open'])
         except Exception as error:
-            self._set_status(f'FEMM validation failed: {error}', 'error')
-            QMessageBox.critical(window, 'Validation using FEMM',
-                                 f'Validation failed:\n{error}')
+            window.flux_femm_validation_btn.setEnabled(True)
+            self._femm_failure(str(error))
+        finally:
+            self._femm_preparing = False
+
+    def _femm_timeout(self):
+        if self.femm_process is not None:
+            self._femm_run['timed_out'] = True
+            self.femm_process.kill()
+
+    def _femm_process_error(self, error):
+        if error == QProcess.FailedToStart and self.femm_process is not None:
+            self._finish_femm_validation(-1, QProcess.CrashExit)
+
+    def _femm_failure(self, message):
+        self._set_status(f'FEMM validation failed: {message}', 'error')
+        logger.error('FEMM validation failed: %s', message)
+        QMessageBox.critical(self.main_window, 'Validation using FEMM', message)
+
+    def _finish_femm_validation(self, exit_code, exit_status):
+        process = self.femm_process
+        if process is None:
+            return
+        window = self.main_window
+        run = self._femm_run
+        self._femm_watchdog.stop()
+        stdout = bytes(process.readAllStandardOutput()).decode('utf-8', 'replace')
+        stderr = bytes(process.readAllStandardError()).decode('utf-8', 'replace')
+        self.femm_process = None
+        process.deleteLater()
+        window.flux_calculate_btn.setEnabled(True)
+        window.flux_femm_validation_btn.setEnabled(True)
+        window.flux_progress_bar.setVisible(False)
+        window.flux_progress_bar.setRange(0, 100)
+        try:
+            if run.get('timed_out'):
+                raise RuntimeError('FEMM validation timed out.')
+            if exit_code != 0 or exit_status != QProcess.NormalExit:
+                raise RuntimeError(stderr.strip() or 'FEMM worker could not run.')
+            payload = json.loads(stdout)
+            femm_metrics = parse_validation_results(run['results'])
+            summary = [run['inputs'], f'Run backend: {payload["backend"]}',
+                       'FEMM remains open: |B| colour map, flux lines and field values.',
+                       'Matched air-gap samples; radial sector flux = |Br| r dtheta L.', '']
+            if 'profile' in run:
+                summary.insert(3, f'{len(run["profile"])} points at radius '
+                               f'{run["profile"][0, 0]:.6g} mm.')
+            deviations = []
+            mean_br_key = ('airgap_br_mean_abs_t' if 'airgap_br_mean_abs_t' in femm_metrics
+                           and 'airgap_br_mean_abs_t' in run['local']
+                           else 'airgap_br_avg_excited_t')
+            mean_flux_key = ('airgap_flux_mean_abs_wb' if 'airgap_flux_mean_abs_wb' in femm_metrics
+                             and 'airgap_flux_mean_abs_wb' in run['local']
+                             else 'airgap_flux_avg_excited_wb')
+            for key, label, unit in (
+                    ('airgap_br_max_t', 'Br max', 'T'),
+                    (mean_br_key, 'Mean |Br|', 'T'),
+                    ('airgap_flux_max_wb', 'Radial flux max', 'Wb'),
+                    (mean_flux_key, 'Mean absolute radial flux', 'Wb')):
+                reference, local = femm_metrics[key], run['local'][key]
+                if reference > 1e-12:
+                    difference = abs(local - reference) / reference * 100
+                    deviations.append(difference)
+                    delta = f'{difference:.2f}%'
+                else:
+                    delta = f'absolute {abs(local-reference):.3e} {unit}'
+                summary += [f'{label}: FEMM {reference:.6e} {unit}',
+                            f'  Current model {local:.6e} {unit}; difference {delta}']
+            samples_file = run['directory'] / 'airgap_samples.csv'
+            if 'profile' in run and samples_file.is_file():
+                profile_errors = compare_airgap_profiles(run['profile'], samples_file)
+                summary.append('')
+                for component, metrics in profile_errors.items():
+                    normalized = metrics['normalized_l2_percent']
+                    relative = (f'{normalized:.2f}%' if normalized is not None
+                                else 'zero reference')
+                    summary.append(f'Signed {component} curve error (L2): {relative}, '
+                                   f'max absolute {metrics["max_absolute_error_t"]:.3e} T')
+            summary += ['', 'Independent linear-material comparison. Review the differences;',
+                        'no acceptance tolerance is configured.']
+            changed = self._femm_input_signature() != run['signature']
+            if changed:
+                summary += ['Inputs changed during the run. Rerun for the new settings.']
+            report = run['directory'] / 'comparison.txt'
+            summary += ['', f'Results: {report}']
+            report.write_text('\n'.join(summary), encoding='utf-8')
+            difference_text = (
+                f'Largest relative difference: {max(deviations):.2f}%.'
+                if deviations else 'Zero FEMM reference; review absolute differences.')
+            self._set_status(
+                f'FEMM comparison completed. {difference_text}'
+                + (' Inputs changed; rerun validation.' if changed else ''),
+                'warning' if changed else 'info')
+            QMessageBox.information(window, 'Validation using FEMM',
+                                    '\n'.join(summary))
+        except Exception as error:
+            self._femm_failure(str(error))

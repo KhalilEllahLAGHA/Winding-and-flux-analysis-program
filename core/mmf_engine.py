@@ -46,29 +46,40 @@ class MMFCalculationEngine:
 
     # ------------------------------------------------------------------ API
 
-    def update_matrix_from_parameters(self, winding_pattern, is_double_layer, poles):
+    def update_matrix_from_parameters(self, winding_pattern, is_double_layer,
+                                      poles, coil_span=None):
         """Rebuild the connection matrix from winding parameters."""
-        self.matrix = generate_connection_matrix(
-            winding_pattern, list(PHASES), is_double_layer, poles)
-        self.slot_arc_deg = default_slot_arc_deg(self.matrix.shape[1])
-        self.set_connection_matrix(self.matrix)
+        matrix = generate_connection_matrix(
+            winding_pattern, list(PHASES), is_double_layer, poles,
+            coil_span=coil_span)
+        self.set_connection_matrix(matrix)
         return self.matrix
 
     def set_connection_matrix(self, matrix):
         """Set the connection matrix and recompute all MMF profiles."""
+        matrix = np.asarray(matrix, dtype=float)
+        if matrix.ndim != 2 or matrix.shape[1] == 0:
+            raise ValueError('Connection matrix must contain phase rows and slots.')
         rows = matrix.shape[0]
         if rows not in (SINGLE_LAYER_ROWS, DOUBLE_LAYER_ROWS):
             raise ValueError(
                 f"Connection matrix must have {SINGLE_LAYER_ROWS} or "
                 f"{DOUBLE_LAYER_ROWS} rows, got {rows}")
+        combined = matrix[:3] + matrix[3:] if rows == DOUBLE_LAYER_ROWS else matrix
+        if not np.isfinite(matrix).all() or not np.allclose(combined.sum(axis=1), 0):
+            raise ValueError('Each complete winding phase must have balanced slot ampere-turns.')
 
-        self.matrix = matrix
+        pitch = 360 / matrix.shape[1]
+        if not 0 < self.slot_arc_deg < pitch:
+            self.slot_arc_deg = default_slot_arc_deg(matrix.shape[1])
+        self.matrix = matrix.copy()
         self.n_slots = matrix.shape[1]
         self.slot_pitch_deg = 360 / self.n_slots
         self.tooth_arc_deg = self.slot_pitch_deg - self.slot_arc_deg
 
         # Amplitude/geometry changed: the cached base tooth MMF is now stale.
         self._tooth_mmf_base = None
+        self.profiles = {}
 
         if rows == DOUBLE_LAYER_ROWS:
             self._calculate_double_layer_profiles(matrix)
@@ -77,13 +88,18 @@ class MMFCalculationEngine:
 
         self.profiles['resultant'] = self.compute_resultant_profile(self.wt_angle_deg)
 
-    def get_profile_data(self, phase_name, layer=None):
+    def get_profile_data(self, phase_name, layer=None, wt_deg=None):
         """Return (angles, values) for a phase ('A'/'B'/'C' or 'resultant').
 
         ``layer`` may be 'top', 'bot', or 'sum' for double layer windings.
+        A supplied Wt returns the instantaneous contribution of that phase.
+        Without Wt the phase profile is its peak-current reference.
         Returns (None, None) when the profile has not been computed.
         """
         if phase_name == 'resultant':
+            if wt_deg is not None:
+                result = self.compute_resultant_profile(wt_deg)
+                return result if result is not None else (None, None)
             key = 'resultant'
         elif layer:
             key = f'{phase_name}_{layer}'
@@ -93,6 +109,9 @@ class MMFCalculationEngine:
         profile = self.profiles.get(key)
         if profile is None:
             return None, None
+        if wt_deg is not None and phase_name in PHASES:
+            factor = _three_phase_sin_factors(wt_deg)[PHASES.index(phase_name)]
+            return profile[0], profile[1] * factor
         return profile
 
     def compute_resultant_profile(self, wt_deg):
@@ -146,17 +165,21 @@ class MMFCalculationEngine:
 
     def update_slot_arc(self, slot_arc_deg):
         """Update the slot opening angle and recompute profiles."""
+        slot_arc_deg = _finite_value(slot_arc_deg, 'Slot arc')
+        pitch = self.slot_pitch_deg or 360.0
+        if not 0 < slot_arc_deg < pitch:
+            raise ValueError('Slot arc must be positive and smaller than the slot pitch.')
         self.slot_arc_deg = slot_arc_deg
         self._recalculate()
 
     def update_turns(self, turns):
         """Update the number of turns and recompute profiles."""
-        self.turns = turns
+        self.turns = _finite_value(turns, 'Turns')
         self._recalculate()
 
     def update_current(self, current_a):
         """Update the phase current (same for all phases) and recompute."""
-        self.phase_current_a = current_a
+        self.phase_current_a = _finite_value(current_a, 'Current')
         self._recalculate()
 
     def update_wt_angle(self, wt_deg):
@@ -167,6 +190,7 @@ class MMFCalculationEngine:
         continuous A/B/C profiles here. This makes Wt-spin and animation
         sweeps ~30x cheaper while producing identical output.
         """
+        wt_deg = _finite_value(wt_deg, 'Electrical angle')
         self.wt_angle_deg = wt_deg
         if self.matrix is not None and 'A' in self.profiles:
             self.profiles['resultant'] = self.compute_resultant_profile(wt_deg)
@@ -196,8 +220,13 @@ class MMFCalculationEngine:
         # Phase current is shared equally between the two layers.
         amp = (self.phase_current_a / 2) * self.turns / 2
 
-        top_tooth = [self._tooth_mmf_from_phase(row * amp) for row in top_rows]
-        bottom_tooth = [self._tooth_mmf_from_phase(row * amp) for row in bottom_rows]
+        # A layer may carry net current whose return lies in the other layer.
+        # Plot its periodic spatial component. The two removed means cancel
+        # in the complete phase, preserving its exact winding function.
+        top_tooth = [self._tooth_mmf_from_phase((row - row.mean()) * amp)
+                     for row in top_rows]
+        bottom_tooth = [self._tooth_mmf_from_phase((row - row.mean()) * amp)
+                        for row in bottom_rows]
 
         angles, top_values = self._build_continuous_profiles(top_tooth)
         _, bottom_values = self._build_continuous_profiles(bottom_tooth)
@@ -230,27 +259,21 @@ class MMFCalculationEngine:
     # ----------------------------------------------------- tooth-based logic
 
     def _tooth_mmf_from_phase(self, phase_mmf):
-        """MMF at each tooth centre from per-slot phase MMF.
+        """Winding function on the tooth immediately before each slot.
 
-        Starts integrating at the slot of the widest constant-MMF group so
-        the profile is symmetric, then accumulates 2x the slot MMF around
-        the circular machine.
+        ``phase_mmf`` stores half the slot ampere-turns. Tooth k precedes
+        slot k in the machine geometry, so F[k+1] - F[k] = NI[k]. The
+        arbitrary integration constant is chosen for zero mean tooth MMF.
         """
-        tooth_mmf = np.zeros_like(phase_mmf, dtype=float)
-
-        anchor = _widest_group_anchor(phase_mmf)
-        anchor_group_size = _count_equal_around(phase_mmf, anchor)
-
-        for offset in range(self.n_slots):
-            i = (anchor + offset) % self.n_slots
-            if offset == 0:
-                same_on_left = _count_equal_left(phase_mmf, i)
-                tooth_mmf[i] = (-anchor_group_size * phase_mmf[anchor]
-                                + 2 * phase_mmf[i] * (same_on_left + 1))
-            else:
-                previous = (anchor + offset - 1) % self.n_slots
-                tooth_mmf[i] = tooth_mmf[previous] + 2 * phase_mmf[i]
-        return tooth_mmf
+        slot_ni = 2 * np.asarray(phase_mmf, dtype=float)
+        if slot_ni.ndim != 1 or len(slot_ni) != self.n_slots:
+            raise ValueError('Slot excitation must match the winding slot count.')
+        if not np.isfinite(slot_ni).all():
+            raise ValueError('Slot excitation must be finite.')
+        if abs(float(slot_ni.sum())) > max(1e-9, float(np.abs(slot_ni).sum()) * 1e-9):
+            raise ValueError('Each winding phase must have balanced slot ampere-turns.')
+        tooth_mmf = np.concatenate(([0.0], np.cumsum(slot_ni[:-1])))
+        return tooth_mmf - tooth_mmf.mean()
 
     def _build_continuous_profiles(self, tooth_value_arrays):
         """Interpolate per-tooth values into continuous 0-360° profiles.
@@ -258,117 +281,47 @@ class MMFCalculationEngine:
         Tooth regions are constant; slot regions interpolate linearly to the
         next tooth. Returns (angles, [values_per_input_array]).
         """
-        angles = np.linspace(0, 360, MMF_PROFILE_RESOLUTION, endpoint=False)
         slot_pitch = self.tooth_arc_deg + self.slot_arc_deg
 
-        tooth_centers = np.arange(0, self.n_slots * slot_pitch, slot_pitch) % 360
-        tooth_starts = (tooth_centers - self.tooth_arc_deg / 2) % 360
-        tooth_ends = (tooth_centers + self.tooth_arc_deg / 2) % 360
-
-        profiles = [np.zeros_like(angles) for _ in tooth_value_arrays]
-
-        for i in range(self.n_slots):
-            next_i = (i + 1) % self.n_slots
-            start, end, next_start = tooth_starts[i], tooth_ends[i], tooth_starts[next_i]
-
-            # Tooth region: constant value (mask handles the 360° wrap).
-            if start < end:
-                tooth_mask = (angles >= start) & (angles < end)
-            else:
-                tooth_mask = (angles >= start) | (angles < end)
-
-            # Slot region: linear interpolation toward the next tooth.
-            if end < next_start:
-                slot_mask = (angles >= end) & (angles < next_start)
-                t = (angles[slot_mask] - end) / (next_start - end)
-            else:
-                slot_mask = (angles >= end) | (angles < next_start)
-                t = (angles[slot_mask] - end) % 360 / ((next_start - end) % 360)
-
-            for profile, tooth_values in zip(profiles, tooth_value_arrays):
-                profile[tooth_mask] = tooth_values[i]
-                profile[slot_mask] = ((1 - t) * tooth_values[i]
-                                      + t * tooth_values[next_i])
-
+        if not 0 < self.slot_arc_deg < slot_pitch:
+            raise ValueError('Slot arc must be positive and smaller than the slot pitch.')
+        # Exact breakpoints preserve flat teeth and linear slot transitions.
+        # Include both ends of the period so exports and plots close at 360.
+        starts = np.arange(self.n_slots) * slot_pitch
+        angles = np.unique(np.concatenate((
+            np.linspace(0, 360, MMF_PROFILE_RESOLUTION, endpoint=False),
+            starts, starts + self.tooth_arc_deg,
+            starts + self.tooth_arc_deg / 2, [360.0])))
+        wrapped = np.mod(angles, 360.0)
+        sector = np.floor(wrapped / slot_pitch).astype(int) % self.n_slots
+        local_angle = wrapped - sector * slot_pitch
+        fraction = np.clip((local_angle - self.tooth_arc_deg)
+                           / self.slot_arc_deg, 0.0, 1.0)
+        profiles = []
+        for tooth_values in tooth_value_arrays:
+            values = np.asarray(tooth_values, dtype=float)
+            profiles.append((1 - fraction) * values[sector]
+                            + fraction * values[(sector + 1) % self.n_slots])
         return angles, profiles
 
 
 def _split_double_layer_rows(matrix):
-    """Combine the 6-row matrix into per-phase top/bottom contributions.
-
-    Slots where both layers carry the same phase (|sum| == 2) split equally;
-    slots with a single coil side (|sum| == 1) are attributed to the top
-    layer, matching the original implementation.
-    """
-    top_a, top_b, top_c, bot_a, bot_b, bot_c = matrix
-    combined = [top_a + bot_a, top_b + bot_b, top_c + bot_c]
-
-    top_rows, bottom_rows = [], []
-    for row in combined:
-        both_layers = np.abs(row) == 2
-        top_rows.append(np.where(both_layers, row // 2, row))
-        bottom_rows.append(np.where(both_layers, row // 2, 0))
-    return top_rows, bottom_rows
+    """Preserve the actual phase/sign of each physical winding layer."""
+    return np.asarray(matrix[:3]), np.asarray(matrix[3:])
 
 
 def _three_phase_sin_factors(wt_deg):
     """sin factors for phases A, B, C at electrical angle Wt."""
-    wt_rad = np.radians(wt_deg)
+    wt_rad = np.radians(_finite_value(wt_deg, 'Electrical angle') % 360)
     return (np.sin(wt_rad),
             np.sin(wt_rad + np.radians(120)),
             np.sin(wt_rad - np.radians(120)))
 
 
-def _count_equal_around(phase_mmf, index):
-    """Size of the circular group of equal values containing ``index``."""
-    if phase_mmf[index] == 0:
-        return 1
-
-    target = phase_mmf[index]
-    count = 1
-    n = len(phase_mmf)
-
-    i = (index + 1) % n
-    while i != index and phase_mmf[i] == target:
-        count += 1
-        i = (i + 1) % n
-
-    i = (index - 1) % n
-    while i != index and phase_mmf[i] == target:
-        count += 1
-        i = (i - 1) % n
-
-    return count
+def _finite_value(value, label):
+    value = float(value)
+    if not np.isfinite(value):
+        raise ValueError(f'{label} must be finite.')
+    return value
 
 
-def _count_equal_left(phase_mmf, index):
-    """Number of consecutive equal values immediately left of ``index``
-    (circular)."""
-    target = phase_mmf[index]
-    count = 0
-    n = len(phase_mmf)
-
-    for offset in range(1, n):
-        if phase_mmf[(index - offset) % n] == target:
-            count += 1
-        else:
-            break
-    return count
-
-
-def _widest_group_anchor(phase_mmf):
-    """Index of the non-zero element with the widest equal-value group.
-
-    Returns -1 when the array contains no non-zero element.
-    """
-    max_count = 0
-    best_index = -1
-
-    for i, value in enumerate(phase_mmf):
-        if value != 0:
-            count = _count_equal_around(phase_mmf, i)
-            if count > max_count:
-                max_count = count
-                best_index = i
-
-    return best_index

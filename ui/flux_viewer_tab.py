@@ -20,8 +20,7 @@ class FluxViewerSteps:
     LAST = FLUX_DENSITY_HEATMAP
 
 
-STEP_TITLES = ("Machine Parameters", "Meshing Configuration",
-               "Flux Density Analysis")
+STEP_TITLES = ("Machine geometry", "Mesh", "Field analysis")
 
 STEP_BADGE_SIZE_PX = 28
 
@@ -31,7 +30,7 @@ def setup_flux_viewer_tab(main_window):
     main_window.tab3.setStyleSheet(FLUX_VIEWER_TAB_STYLE)
 
     layout = QVBoxLayout(main_window.tab3)
-    layout.setContentsMargins(12, 12, 12, 12)
+    layout.setContentsMargins(14, 12, 14, 12)
     layout.setSpacing(10)
 
     layout.addWidget(_create_step_header(main_window))
@@ -55,10 +54,10 @@ def _create_step_header(main_window):
     """Wizard progress header: numbered badges joined by connector lines."""
     frame = QFrame()
     frame.setObjectName("fluxStepHeader")
-    frame.setFixedHeight(56)
+    frame.setFixedHeight(44)
 
     layout = QHBoxLayout(frame)
-    layout.setContentsMargins(16, 8, 16, 8)
+    layout.setContentsMargins(14, 6, 14, 6)
     layout.setSpacing(10)
 
     main_window.flux_step_badges = []
@@ -89,26 +88,27 @@ def _create_step_header(main_window):
 def _create_navigation_frame(main_window):
     frame = QFrame()
     frame.setObjectName("fluxNavBar")
-    frame.setFixedHeight(58)
+    frame.setFixedHeight(50)
 
     layout = QHBoxLayout(frame)
-    layout.setContentsMargins(16, 8, 16, 8)
+    layout.setContentsMargins(14, 6, 14, 6)
     layout.setSpacing(10)
 
     # Contextual hint ("Generate a mesh to continue", ...).
     main_window.flux_nav_hint = QLabel("")
+    main_window.flux_nav_hint.setWordWrap(True)
     layout.addWidget(main_window.flux_nav_hint)
     layout.addStretch()
 
     main_window.flux_prev_btn = QPushButton("← Previous")
-    main_window.flux_prev_btn.setFixedSize(120, 38)
+    main_window.flux_prev_btn.setFixedSize(110, 34)
     main_window.flux_prev_btn.clicked.connect(
         lambda: navigate_step(main_window, -1))
     layout.addWidget(main_window.flux_prev_btn)
 
     main_window.flux_next_btn = QPushButton("Next →")
     main_window.flux_next_btn.setObjectName("primaryButton")
-    main_window.flux_next_btn.setFixedSize(120, 38)
+    main_window.flux_next_btn.setFixedSize(110, 34)
     main_window.flux_next_btn.clicked.connect(
         lambda: navigate_step(main_window, 1))
     layout.addWidget(main_window.flux_next_btn)
@@ -193,7 +193,7 @@ def _update_navigation_hint(main_window, current_step, has_mesh_data):
                        'warning')
     else:
         set_status(hint_label,
-                   "Run Calculate, then generate a visualisation or animation.",
+                   "Solve the field, then inspect the map or validate with FEMM.",
                    'muted')
 
 

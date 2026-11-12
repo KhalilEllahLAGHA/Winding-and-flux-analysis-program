@@ -18,10 +18,10 @@ from ui.theme import (PAGE_SUBTITLE_STYLE, PAGE_TITLE_STYLE, SPIN_BOX_STYLE,
                       badge_style)
 from utils.constants import DEFAULT_NUM_SLOTS, DEFAULT_PAIR_POLES, SLOT_COUNT_RANGE
 
-CONTROL_PANEL_MIN_WIDTH_PX = 285
-EXPLANATION_PANEL_MIN_WIDTH_PX = 360
-LEFT_PANEL_MIN_WIDTH_PX = 660
-DRAWING_MIN_SIZE_PX = (520, 520)
+CONTROL_PANEL_MIN_WIDTH_PX = 290
+EXPLANATION_PANEL_MIN_WIDTH_PX = 290
+LEFT_PANEL_MIN_WIDTH_PX = 320
+DRAWING_MIN_SIZE_PX = (380, 380)
 
 
 class WindingTabController:
@@ -39,27 +39,38 @@ class WindingTabController:
 
         main_splitter = QSplitter(Qt.Horizontal)
         main_layout = QHBoxLayout(window.tab_main)
-        main_layout.setContentsMargins(12, 12, 12, 12)
+        main_layout.setContentsMargins(14, 14, 14, 14)
         main_layout.addWidget(main_splitter)
 
         left_widget = QWidget()
-        left_layout = QHBoxLayout(left_widget)
+        left_layout = QVBoxLayout(left_widget)
         left_layout.setContentsMargins(0, 0, 8, 0)
-        left_layout.setSpacing(12)
-        left_layout.addWidget(self._build_control_panel())
-        left_layout.addWidget(self._build_explanation_panel())
+        left_layout.setSpacing(10)
+        controls = self._build_control_panel()
+        controls.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
+        left_layout.addWidget(controls)
+        explanation = self._build_explanation_panel()
+        explanation.setMinimumHeight(190)
+        left_layout.addWidget(explanation, 1)
+        sidebar = QScrollArea()
+        sidebar.setWidgetResizable(True)
+        sidebar.setFrameShape(QFrame.NoFrame)
+        sidebar.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        sidebar.setMinimumWidth(LEFT_PANEL_MIN_WIDTH_PX)
+        sidebar.setMaximumWidth(370)
+        sidebar.setWidget(left_widget)
 
         right_widget = self._build_drawing_panel()
 
-        main_splitter.addWidget(left_widget)
+        main_splitter.addWidget(sidebar)
         main_splitter.addWidget(right_widget)
         main_splitter.setCollapsible(0, False)
         main_splitter.setCollapsible(1, False)
-        left_widget.setMinimumWidth(LEFT_PANEL_MIN_WIDTH_PX)
         # Let the drawing take the remaining space on any screen size.
         main_splitter.setStretchFactor(0, 0)
         main_splitter.setStretchFactor(1, 1)
-        main_splitter.setHandleWidth(2)
+        main_splitter.setHandleWidth(5)
+        main_splitter.setSizes([350, 820])
 
     def _build_control_panel(self):
         window = self.window
@@ -67,13 +78,14 @@ class WindingTabController:
         control_widget = QWidget()
         control_widget.setMinimumWidth(CONTROL_PANEL_MIN_WIDTH_PX)
         control_layout = QVBoxLayout(control_widget)
-        control_layout.setSpacing(12)
+        control_layout.setContentsMargins(0, 0, 0, 0)
+        control_layout.setSpacing(10)
 
-        title = QLabel("Winding Simulator")
+        title = QLabel("Winding layout")
         title.setStyleSheet(PAGE_TITLE_STYLE)
         control_layout.addWidget(title)
 
-        subtitle = QLabel("Results and the drawing update instantly.")
+        subtitle = QLabel("Define the coils. The layout and winding checks update as you edit.")
         subtitle.setStyleSheet(PAGE_SUBTITLE_STYLE)
         subtitle.setWordWrap(True)
         control_layout.addWidget(subtitle)
@@ -102,7 +114,7 @@ class WindingTabController:
         window.span_spin = QSpinBox()
         window.span_spin.setRange(1, window.slots_spin.value())
         window.span_spin.setValue(
-            window.slots_spin.value() // window.poles_spin.value())
+            window.slots_spin.value() // self.actual_poles())
         window.span_spin.setStyleSheet(SPIN_BOX_STYLE)
         window.span_spin.valueChanged.connect(self.update_winding)
 
@@ -121,34 +133,34 @@ class WindingTabController:
         window.span_spin.setToolTip(
             "Coil span in slots. Snaps to the pole pitch in double-layer mode.")
 
-        config_group = QGroupBox("Winding Configuration")
+        config_group = QGroupBox("Coil configuration")
         config_form = QFormLayout(config_group)
-        config_form.setSpacing(10)
-        config_form.setContentsMargins(12, 16, 12, 12)
+        config_form.setSpacing(8)
+        config_form.setContentsMargins(10, 10, 10, 10)
 
-        config_form.addRow("Number of Slots:", window.slots_spin)
-        config_form.addRow("Pair of Poles:", window.poles_spin)
-        config_form.addRow("Coil Span (slots):", window.span_spin)
+        config_form.addRow("Slots", window.slots_spin)
+        config_form.addRow("Pole pairs", window.poles_spin)
+        config_form.addRow("Coil span · slots", window.span_spin)
 
         layer_row = QVBoxLayout()
         layer_row.setSpacing(4)
         layer_row.addWidget(window.single_layer)
         layer_row.addWidget(window.double_layer)
-        config_form.addRow("Winding Type:", layer_row)
+        config_form.addRow("Layers", layer_row)
 
         control_layout.addWidget(config_group)
 
-        results_group = QGroupBox("Computed Properties")
+        results_group = QGroupBox("Winding checks")
         results_form = QFormLayout(results_group)
-        results_form.setSpacing(10)
-        results_form.setContentsMargins(12, 16, 12, 12)
+        results_form.setSpacing(8)
+        results_form.setContentsMargins(10, 10, 10, 10)
 
         window.slots_per_pole_label = QLabel("–")
         window.slots_per_phase_label = QLabel("–")
         window.winding_type_label = QLabel("–")
 
         results_form.addRow("Slots per pole:", window.slots_per_pole_label)
-        results_form.addRow("Slots / pole / phase (q):",
+        results_form.addRow("Slots / pole / phase",
                             window.slots_per_phase_label)
         results_form.addRow("Winding type:", window.winding_type_label)
 
@@ -167,7 +179,7 @@ class WindingTabController:
     def _build_explanation_panel(self):
         window = self.window
 
-        container = QGroupBox("Winding Explanation")
+        container = QGroupBox("Design notes")
         container.setMinimumWidth(EXPLANATION_PANEL_MIN_WIDTH_PX)
         layout = QVBoxLayout(container)
         layout.setContentsMargins(8, 14, 8, 8)
@@ -176,7 +188,7 @@ class WindingTabController:
         window.explanation_text.setWordWrap(True)
         window.explanation_text.setAlignment(Qt.AlignTop | Qt.AlignLeft)
         window.explanation_text.setStyleSheet(
-            "background: transparent; padding: 6px;")
+            "background: transparent; padding: 4px; font-size: 12px; color: #a2afbf;")
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -229,6 +241,10 @@ class WindingTabController:
         slots = window.slots_spin.value()
         poles = self.actual_poles()
         is_double_layer = window.double_layer.isChecked()
+        if hasattr(window, 'winding_context_label'):
+            window.winding_context_label.setText(
+                f'{slots} slots · {poles} poles · '
+                + ('Double layer' if is_double_layer else 'Single layer'))
         coil_span = (slots // poles if window.single_layer.isChecked()
                      else window.span_spin.value())
 
@@ -258,7 +274,7 @@ class WindingTabController:
             window.connection_tab.update_matrix(
                 window.stator_drawing.winding_pattern,
                 window.stator_drawing.is_double_layer,
-                poles)
+                poles, coil_span=coil_span)
 
     def update_span_for_double_layer(self):
         """Snap the coil span to the pole pitch while in double layer mode."""

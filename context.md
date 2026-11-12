@@ -1,5 +1,12 @@
 # Project Context & Work Summary
 
+Documentation reviewed 6 September 2026. The implementation notes, measurements
+and checks below describe prior work; its original verification date is not
+recorded here. No application, numerical tests or UI checks were rerun during
+this documentation review. Verify current runtimes before using the run command.
+See [README.md](README.md) for local navigation and [../../CONTEXT.md](../../CONTEXT.md)
+for workspace policies.
+
 **Application:** Three Phase Winding Simulator — a PyQt5 + matplotlib desktop
 app for electric-machine winding design and magnetic flux analysis.
 
@@ -111,31 +118,35 @@ Wt-sweep animation re-did identical work every frame.
 The remaining animation cost is matplotlib rasterization at 220 DPI — inherent
 to the output quality, left unchanged rather than silently lowering resolution.
 
-**Load-bearing invariant:** the solver's vectorized fast path assumes MMF is
-radial-only and symmetric (`MMF_up == MMF_down`, `MMF_left == MMF_right == 0`).
-If tangential/asymmetric MMF sources are ever added, guard or remove the
-`element_mmf_ud` fast path in `flux_solver._mmf_arrays()`.
+**12 November 2026 update.** Active winding sources use separate aligned
+`element_mmf_up` and `element_mmf_down` arrays, with exact unequal half-cell
+integrals. The symmetric `element_mmf_ud` input remains a compatibility path.
+The physics corrections supersede the earlier numerical-output invariant.
+See [the magnetic-model audit](femm_validation/physics-audit.md) for corrected
+field equations, coil pairing, source placement and FEMM convergence evidence.
 
 ---
 
 ## 5. Verification approach
 
-- **Bit-for-bit numerical equivalence:** reference outputs (potentials, branch
+- **Numerical agreement within the comparison tolerance:** reference outputs (potentials, branch
   fluxes, densities, tooth/slot MMF, statistics, MMF profiles) were captured
   from the original code, then `np.allclose`-compared after every optimization.
-  All 44 checks pass.
+  The prior session reported that all 44 checks passed.
 - **Pixel-identical renders:** animation heatmap frames compared against the
   original per-frame builder (mean pixel diff 0.000).
 - **UI smoke test:** offscreen run exercising the live preview fix, wizard
   navigation, mesh gating/invalidation, real mesh generation, and feasibility
-  badges — all pass.
+  badges — reported as passing in the prior session.
 - **End-to-end timing:** drove the real UI through generate-mesh →
   flux-calculate → visualization → animation pre-render.
 
-Temporary profiling/verification scripts were removed after use; the app
-constructs and runs cleanly.
+The prior session reported that temporary profiling/verification scripts were
+removed after use and the app constructed and ran cleanly. The checks have not
+been repeated in this review.
 
-> Headless testing note: on this machine the Qt `offscreen` platform has **no
+> Historical testing note: the prior session reported that the Qt `offscreen`
+> platform had **no
 > fonts** (text invisible in `grab()`). For screenshots use the native platform
 > with `window.setAttribute(Qt.WA_DontShowOnScreen, True)`; logic-only tests run
 > fine under `offscreen`.

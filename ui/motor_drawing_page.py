@@ -5,9 +5,10 @@ import logging
 
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
-from PyQt5.QtCore import QTimer
-from PyQt5.QtWidgets import (QFormLayout, QGroupBox, QHBoxLayout, QLabel,
-                             QLineEdit, QPushButton, QVBoxLayout, QWidget)
+from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtWidgets import (QFormLayout, QFrame, QGroupBox, QHBoxLayout, QLabel,
+                             QLineEdit, QPushButton, QScrollArea, QVBoxLayout,
+                             QWidget)
 
 from ui.machine_drawer import MachineDrawer
 from ui.theme import (MOTOR_INPUT_PAGE_STYLE, PAGE_SUBTITLE_STYLE,
@@ -41,10 +42,25 @@ class MotorDrawingPageUI:
         self.main_window.motor_drawing_page_ui = self
 
         main_layout = QHBoxLayout(widget)
-        main_layout.setContentsMargins(8, 8, 8, 8)
-        main_layout.setSpacing(12)
-        main_layout.addLayout(self._build_input_panel(), 3)
-        main_layout.addWidget(self._build_drawing_canvas(), 5)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(14)
+        inputs = QWidget()
+        inputs.setLayout(self._build_input_panel())
+        sidebar = QScrollArea()
+        sidebar.setWidgetResizable(True)
+        sidebar.setFrameShape(QFrame.NoFrame)
+        sidebar.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        sidebar.setMinimumWidth(320)
+        sidebar.setMaximumWidth(350)
+        sidebar.setWidget(inputs)
+        main_layout.addWidget(sidebar)
+        drawing = QFrame()
+        drawing.setObjectName('machinePlotSurface')
+        drawing.setStyleSheet('QFrame#machinePlotSurface { background: white; border: 1px solid #cfd7e2; border-radius: 9px; }')
+        drawing_layout = QVBoxLayout(drawing)
+        drawing_layout.setContentsMargins(4, 4, 4, 4)
+        drawing_layout.addWidget(self._build_drawing_canvas())
+        main_layout.addWidget(drawing, 1)
 
         self._connect_inputs_to_redraw()
         self._link_with_winding_tab()
@@ -61,23 +77,25 @@ class MotorDrawingPageUI:
         defaults = DEFAULT_MACHINE_PARAMS
 
         left_panel = QVBoxLayout()
-        left_panel.setContentsMargins(4, 4, 8, 4)
-        left_panel.setSpacing(12)
+        left_panel.setContentsMargins(0, 0, 5, 0)
+        left_panel.setSpacing(10)
 
-        title = QLabel("Step 1: Machine Parameters")
+        title = QLabel("Machine geometry")
         title.setStyleSheet(PAGE_TITLE_STYLE)
-        left_panel.addWidget(title)
+        heading = QHBoxLayout()
+        heading.addWidget(title)
+        heading.addStretch()
+        left_panel.addLayout(heading)
 
-        subtitle = QLabel("Define the machine geometry — the cross-section "
-                          "preview updates live as you type.")
+        subtitle = QLabel("Set the machine dimensions and inspect the cross-section.")
         subtitle.setStyleSheet(PAGE_SUBTITLE_STYLE)
         subtitle.setWordWrap(True)
         left_panel.addWidget(subtitle)
 
-        dimensions_group = QGroupBox("Machine Dimensions")
+        dimensions_group = QGroupBox("Dimensions")
         dimensions_layout = QFormLayout(dimensions_group)
-        dimensions_layout.setSpacing(10)
-        dimensions_layout.setContentsMargins(12, 16, 12, 12)
+        dimensions_layout.setSpacing(8)
+        dimensions_layout.setContentsMargins(10, 10, 10, 10)
 
         window.flux_stator_rout = QLineEdit(str(defaults['stator_outer_radius']))
         window.flux_stator_rin = QLineEdit(str(defaults['stator_inner_radius']))
@@ -100,17 +118,17 @@ class MotorDrawingPageUI:
         window.flux_slot_height.setToolTip(
             "Radial depth of the stator slots (mm).")
 
-        dimensions_layout.addRow("Stator Outer Radius (mm):", window.flux_stator_rout)
-        dimensions_layout.addRow("Stator Inner Radius (mm):", window.flux_stator_rin)
-        dimensions_layout.addRow("Air Gap Thickness (mm):", window.flux_air_gap_thickness)
-        dimensions_layout.addRow("Shaft Radius (mm):", window.flux_shaft_radius)
-        dimensions_layout.addRow("Slot Angle (deg):", window.flux_slot_angle)
-        dimensions_layout.addRow("Slot Height (mm):", window.flux_slot_height)
+        dimensions_layout.addRow("Stator outer · mm", window.flux_stator_rout)
+        dimensions_layout.addRow("Stator bore · mm", window.flux_stator_rin)
+        dimensions_layout.addRow("Air gap · mm", window.flux_air_gap_thickness)
+        dimensions_layout.addRow("Shaft radius · mm", window.flux_shaft_radius)
+        dimensions_layout.addRow("Slot opening · °", window.flux_slot_angle)
+        dimensions_layout.addRow("Slot height · mm", window.flux_slot_height)
 
-        winding_group = QGroupBox("Winding Parameters")
+        winding_group = QGroupBox("Winding geometry")
         winding_layout = QFormLayout(winding_group)
-        winding_layout.setSpacing(10)
-        winding_layout.setContentsMargins(12, 16, 12, 12)
+        winding_layout.setSpacing(8)
+        winding_layout.setContentsMargins(10, 10, 10, 10)
 
         window.flux_num_slots = QLineEdit(str(defaults['num_slots']))
         window.flux_num_pair_poles = QLineEdit(str(DEFAULT_PAIR_POLES))
@@ -121,24 +139,24 @@ class MotorDrawingPageUI:
         window.flux_num_pair_poles.setToolTip(
             "Number of pole pairs. Kept in sync with the Winding Simulator tab.")
 
-        winding_layout.addRow("Number of Slots:", window.flux_num_slots)
-        winding_layout.addRow("Number of Pair of Poles:", window.flux_num_pair_poles)
+        winding_layout.addRow("Slots", window.flux_num_slots)
+        winding_layout.addRow("Pole pairs", window.flux_num_pair_poles)
 
         sync_note = QLabel("Slots, poles, and slot angle stay in sync with "
                            "the other tabs.")
         sync_note.setStyleSheet(PAGE_SUBTITLE_STYLE)
         sync_note.setWordWrap(True)
 
-        reset_btn = QPushButton("Reset to Default")
+        reset_btn = QPushButton("Reset")
         reset_btn.setToolTip("Restore every machine parameter to its default value.")
         reset_btn.clicked.connect(self.reset_to_default)
-        reset_btn.setMinimumWidth(140)
-        reset_btn.setMinimumHeight(36)
+        reset_btn.setMinimumWidth(54)
+        reset_btn.setMinimumHeight(30)
+        heading.addWidget(reset_btn)
 
         left_panel.addWidget(dimensions_group)
         left_panel.addWidget(winding_group)
         left_panel.addWidget(sync_note)
-        left_panel.addWidget(reset_btn)
         left_panel.addStretch()
 
         return left_panel

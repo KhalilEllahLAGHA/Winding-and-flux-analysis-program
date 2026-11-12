@@ -4,6 +4,7 @@ shown in the Winding Simulator tab (formerly ``explanation.py``)."""
 import math
 from fractions import Fraction
 
+from core.connection_matrix import build_winding_connection_matrix
 from utils.constants import GRID_FREQUENCY_HZ, PHASE_COUNT
 
 # Heuristic thresholds used by the report recommendations.
@@ -37,28 +38,49 @@ def check_winding_feasibility(slots, poles):
     return not messages, messages, q
 
 
-def calculate_winding_factors(slots, poles, coil_span):
-    """Compute distribution, pitch, skew, and total winding factors."""
-    q = slots_per_pole_per_phase(slots, poles)
-    slot_angle = (2 * math.pi * poles) / slots
-    alpha = math.pi / (slots / poles)
+def calculate_winding_factors(slots, poles, coil_span, is_double_layer=True):
+    """Working-harmonic factors of the actual equal-turn coil layout.
 
-    if q.numerator != 0:
-        kd = abs(math.sin(q.numerator * alpha / 2)
-                 / (q.numerator * math.sin(alpha / 2)))
+    Electrical slot angle is pi*poles/slots. The normalized signed-conductor
+    phasor gives kw for integer and fractional-slot layouts. The planar
+    model's zero-skew geometry gives ks=1. Unsupported layouts retain an
+    explanation.
+    """
+    factors = {'distribution': None, 'pitch': None, 'skew': 1.0, 'total': None}
+    try:
+        slot_angle = math.pi * poles / slots
+        if not math.isfinite(slot_angle) or slot_angle <= 0:
+            raise ValueError('Slot and pole counts must be positive and finite.')
+        kp = abs(math.sin(coil_span * slot_angle / 2))
+        if kp < 1e-12:
+            kp = 0.0
+        factors['pitch'] = kp
+        matrix = build_winding_connection_matrix(
+            slots, poles, is_double_layer, coil_span)
+    except (ValueError, TypeError, ZeroDivisionError, OverflowError) as error:
+        factors['error'] = str(error)
+        return factors
+
+    phase_angles = [2 * math.pi * (poles // 2) * slot / slots
+                    for slot in range(slots)]
+    phasors = [complex(math.cos(angle), -math.sin(angle))
+               for angle in phase_angles]
+    complete = matrix[:3] + matrix[3:] if is_double_layer else matrix
+    counts = abs(matrix[:3]).sum(axis=1)
+    if is_double_layer:
+        counts += abs(matrix[3:]).sum(axis=1)
+    kw = math.fsum(abs(sum(value * phasor for value, phasor in zip(row, phasors)))
+                   / count for row, count in zip(complete, counts)) / PHASE_COUNT
+    if kp:
+        kd = kw / kp
     else:
-        kd = 0
-
-    coil_angle = (coil_span * math.pi) / (slots / poles)
-    kp = math.sin(coil_angle / 2)
-    ks = math.sin(slot_angle / 2) / (slot_angle / 2)
-
-    return {
-        'distribution': kd,
-        'pitch': kp,
-        'skew': ks,
-        'total': kd * kp * ks,
-    }
+        # A full electrical-period double-layer span cancels all excitation,
+        # but the distribution of its coil starts is still well defined.
+        kd = math.fsum(abs(sum(value * phasor for value, phasor in zip(row, phasors)))
+                       / abs(row).sum() for row in matrix[:3]) / PHASE_COUNT
+        kw = 0.0
+    factors.update(distribution=min(1.0, kd), total=min(1.0, kw))
+    return factors
 
 
 def predict_performance(slots, poles):
@@ -75,7 +97,7 @@ def predict_performance(slots, poles):
 
 def generate_winding_explanation(slots, poles, coil_span, is_double_layer, q):
     """Build the multi-section text report describing the configuration."""
-    factors = calculate_winding_factors(slots, poles, coil_span)
+    factors = calculate_winding_factors(slots, poles, coil_span, is_double_layer)
     performance = predict_performance(slots, poles)
 
     sections = [
@@ -104,21 +126,28 @@ def _technical_parameters_section(slots, poles, coil_span, q, is_double_layer):
         "2. TECHNICAL PARAMETERS",
         f"• Slots per pole (S/P): {slots / poles:.2f}",
         f"• Slots per pole per phase (q): {q}",
-        f"• Electrical angle between slots: {360 * poles / slots:.1f}°",
+        f"• Electrical angle between slots: {180 * poles / slots:.1f}°",
     ]
     if is_double_layer:
-        lines.append(f"• Coil pitch: {(coil_span / slots) * 100:.1f}% of pole pitch\n")
+        lines.append(f"• Coil pitch: {coil_span / (slots / poles) * 100:.1f}% of pole pitch\n")
     return lines
 
 
 def _winding_factors_section(factors):
-    return [
+    def display(key):
+        value = factors[key]
+        return f'{value:.3f}' if value is not None else 'not available for this layout'
+
+    lines = [
         "3. WINDING FACTORS",
-        f"• Distribution factor (kd): {factors['distribution']:.3f}",
-        f"• Pitch factor (kp): {factors['pitch']:.3f}",
-        f"• Skew factor (ks): {factors['skew']:.3f}",
-        f"• Total winding factor (kw): {factors['total']:.3f}\n",
+        f"• Distribution factor (kd): {display('distribution')}",
+        f"• Pitch factor (kp): {display('pitch')}",
+        f"• Skew factor (ks): {display('skew')} (unskewed planar model)",
+        f"• Total winding factor (kw): {display('total')}\n",
     ]
+    if factors.get('error'):
+        lines.append(f"• Layout limitation: {factors['error']}\n")
+    return lines
 
 
 def _performance_section(performance, poles, q):

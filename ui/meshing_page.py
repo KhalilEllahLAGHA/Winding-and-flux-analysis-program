@@ -16,10 +16,11 @@ import numpy as np
 import pandas as pd
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
-from PyQt5.QtCore import QTimer
+from PyQt5.QtCore import QSize, Qt, QTimer
 from PyQt5.QtWidgets import (QApplication, QComboBox, QFileDialog, QFormLayout,
-                             QGroupBox, QHBoxLayout, QLabel, QProgressBar,
-                             QPushButton, QSpinBox, QTabWidget, QTextEdit,
+                             QFrame, QGroupBox, QHBoxLayout, QLabel, QProgressBar,
+                             QPushButton, QScrollArea, QSizePolicy, QSpinBox,
+                             QTabWidget, QTextEdit,
                              QVBoxLayout, QWidget)
 
 from core.meshing_engine import MeshingEngine
@@ -50,8 +51,19 @@ class MeshingPageUI:
         widget.setStyleSheet(MESHING_PAGE_STYLE)
 
         main_layout = QHBoxLayout(widget)
-        main_layout.addLayout(self._build_settings_panel(), 3)
-        main_layout.addWidget(self._build_visualization_panel(widget), 5)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(14)
+        settings = QWidget()
+        settings.setLayout(self._build_settings_panel())
+        sidebar = QScrollArea()
+        sidebar.setWidgetResizable(True)
+        sidebar.setFrameShape(QFrame.NoFrame)
+        sidebar.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        sidebar.setMinimumWidth(320)
+        sidebar.setMaximumWidth(350)
+        sidebar.setWidget(settings)
+        main_layout.addWidget(sidebar)
+        main_layout.addWidget(self._build_visualization_panel(widget), 1)
 
         return widget
 
@@ -60,23 +72,23 @@ class MeshingPageUI:
     def _build_settings_panel(self):
         window = self.main_window
         left_panel = QVBoxLayout()
-        left_panel.setContentsMargins(4, 4, 8, 4)
-        left_panel.setSpacing(12)
+        left_panel.setContentsMargins(0, 0, 5, 0)
+        left_panel.setSpacing(10)
 
-        title = QLabel("Step 2: Meshing Configuration")
+        title = QLabel("Mesh configuration")
         title.setStyleSheet(PAGE_TITLE_STYLE)
         left_panel.addWidget(title)
 
-        subtitle = QLabel("Pick a quality preset (or tune the layers "
-                          "manually), then generate the mesh to continue.")
+        subtitle = QLabel("Choose a resolution, then generate the mesh for analysis.")
         subtitle.setStyleSheet(PAGE_SUBTITLE_STYLE)
         subtitle.setWordWrap(True)
         left_panel.addWidget(subtitle)
 
         window.mesh_tabs = QTabWidget()
-        window.mesh_tabs.addTab(self._create_basic_settings_tab(), "Basic Settings")
+        window.mesh_tabs.addTab(self._create_basic_settings_tab(), "Presets")
         window.mesh_tabs.addTab(self._create_advanced_settings_tab(),
-                                "Advanced Settings")
+                                "Custom")
+        window.mesh_tabs.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
         left_panel.addWidget(window.mesh_tabs)
 
         button_layout = QHBoxLayout()
@@ -84,14 +96,14 @@ class MeshingPageUI:
 
         window.generate_mesh_btn = QPushButton("Generate Mesh")
         window.generate_mesh_btn.setObjectName("primaryButton")
-        window.generate_mesh_btn.setMinimumHeight(40)
+        window.generate_mesh_btn.setMinimumHeight(34)
         window.generate_mesh_btn.setToolTip(
             "Build the polar mesh from the Step 1 machine parameters.")
         window.generate_mesh_btn.clicked.connect(self.generate_mesh)
         button_layout.addWidget(window.generate_mesh_btn)
 
-        window.export_mesh_btn = QPushButton("Export Mesh Data")
-        window.export_mesh_btn.setMinimumHeight(40)
+        window.export_mesh_btn = QPushButton("Export Mesh")
+        window.export_mesh_btn.setMinimumHeight(34)
         window.export_mesh_btn.setToolTip(
             "Save the generated mesh as Excel, CSV, or JSON.")
         window.export_mesh_btn.clicked.connect(self.export_mesh_data)
@@ -105,6 +117,7 @@ class MeshingPageUI:
         left_panel.addWidget(window.mesh_progress)
 
         window.mesh_status = QLabel("")
+        window.mesh_status.setWordWrap(True)
         set_status(window.mesh_status, "", 'muted')
         left_panel.addWidget(window.mesh_status)
 
@@ -113,7 +126,8 @@ class MeshingPageUI:
         left_panel.addWidget(log_label)
 
         window.mesh_log = QTextEdit()
-        window.mesh_log.setMaximumHeight(110)
+        window.mesh_log.setMinimumHeight(80)
+        window.mesh_log.setMaximumHeight(100)
         window.mesh_log.setReadOnly(True)
         window.mesh_log.setPlainText("Mesh generation log will appear here...")
         left_panel.addWidget(window.mesh_log)
@@ -125,22 +139,25 @@ class MeshingPageUI:
         tab = QWidget()
         layout = QVBoxLayout(tab)
 
-        preset_group = QGroupBox("Mesh Quality Presets")
+        preset_group = QGroupBox("Resolution")
         preset_layout = QFormLayout(preset_group)
+        preset_layout.setContentsMargins(10, 10, 10, 10)
 
         window.mesh_preset = QComboBox()
         window.mesh_preset.addItems([
-            "Low Precision (Fast Calculation)",
-            "Mid Precision (Recommended)",
-            "High Precision (Slow Calculation)",
+            "Fast · coarse mesh",
+            "Balanced · recommended",
+            "Fine · higher precision",
         ])
         window.mesh_preset.setCurrentIndex(DEFAULT_MESH_PRESET_INDEX)
         window.mesh_preset.currentIndexChanged.connect(self.apply_preset)
-        preset_layout.addRow("Quality Preset:", window.mesh_preset)
+        preset_layout.addRow(window.mesh_preset)
         layout.addWidget(preset_group)
 
-        settings_group = QGroupBox("Current Settings")
+        settings_group = QGroupBox("Mesh divisions")
         settings_layout = QFormLayout(settings_group)
+        settings_layout.setContentsMargins(10, 10, 10, 10)
+        settings_layout.setVerticalSpacing(5)
 
         window.preset_rotor_layers = QLabel()
         window.preset_slot_layers = QLabel()
@@ -167,6 +184,8 @@ class MeshingPageUI:
 
         manual_group = QGroupBox("Manual Configuration")
         manual_layout = QFormLayout(manual_group)
+        manual_layout.setContentsMargins(10, 10, 10, 10)
+        manual_layout.setVerticalSpacing(6)
 
         window.manual_rotor_layers = _layer_spin_box(maximum=50)
         window.manual_slot_layers = _layer_spin_box(maximum=50)
@@ -185,7 +204,7 @@ class MeshingPageUI:
 
         layout.addWidget(manual_group)
 
-        reset_btn = QPushButton("RESET")
+        reset_btn = QPushButton("Reset custom settings")
         reset_btn.clicked.connect(self.reset_to_default)
         reset_btn.setMinimumHeight(35)
         layout.addWidget(reset_btn)
@@ -210,7 +229,11 @@ class MeshingPageUI:
         self.draw_base_machine()
 
         right_panel = QVBoxLayout()
+        right_panel.setContentsMargins(0, 0, 0, 0)
+        right_panel.setSpacing(6)
         window.mesh_toolbar = NavigationToolbar(window.mesh_canvas, parent_widget)
+        window.mesh_toolbar.setIconSize(QSize(18, 18))
+        window.mesh_toolbar.setFixedHeight(34)
         right_panel.addWidget(window.mesh_toolbar)
         right_panel.addWidget(window.mesh_canvas)
 
@@ -682,4 +705,5 @@ def _layer_spin_box(maximum):
     spin = QSpinBox()
     spin.setRange(1, maximum)
     spin.setValue(1)
+    spin.setFixedHeight(32)
     return spin

@@ -35,7 +35,8 @@ def _parse_tolerance(solver_options):
         tolerance = float(solver_options.get('tolerance', DEFAULT_SOLVER_TOLERANCE))
     except (TypeError, ValueError):
         return DEFAULT_SOLVER_TOLERANCE
-    return tolerance if tolerance > 0 else DEFAULT_SOLVER_TOLERANCE
+    return (tolerance if np.isfinite(tolerance) and tolerance > 0
+            else DEFAULT_SOLVER_TOLERANCE)
 
 
 class FluxCalculator:
@@ -56,6 +57,8 @@ class FluxCalculator:
         # vectorised NumPy gathers instead of per-element Python dict loops.
         self._cached_structure_key = None
         self._cached_matrix = None
+        self._cached_reduced_matrix = None
+        self._cached_preconditioner = None
         self._cached_id_to_idx = None
         self._cached_neighbors = None
         self._cached_eids = None
@@ -67,8 +70,13 @@ class FluxCalculator:
         # Per-solve working arrays (reset each solve).
         self._mmf_arr = None
         self._element_mmf_ud = None
+        self._element_mmf_up = None
+        self._element_mmf_down = None
         self._branch_flux_array = None
         self._bmag_array = None
+        self._solver_residual_norm = 0.0
+        self._solver_relative_residual = 0.0
+        self._solver_source_balance = 0.0
 
     def calculate_flux_distribution(self, reluctance_results, mmf_results,
                                     solver_options=None, progress_callback=None,
@@ -86,6 +94,8 @@ class FluxCalculator:
         # calculator provides this so the solver can skip rebuilding MMF
         # arrays from per-element dicts — the dominant per-frame cost).
         self._element_mmf_ud = mmf_results.get('element_mmf_ud')
+        self._element_mmf_up = mmf_results.get('element_mmf_up')
+        self._element_mmf_down = mmf_results.get('element_mmf_down')
         total_elements = len(self.reluctance_data)
 
         if progress_callback:
@@ -99,13 +109,6 @@ class FluxCalculator:
             progress_callback("Solving with Preconditioned CG (Jacobi)...")
 
         self.potentials, info = self._solve_linear_system(matrix, rhs, tolerance)
-
-        if info > 0:
-            logger.warning("%s did not fully converge (info=%s)",
-                           SOLVER_METHOD_NAME.upper(), info)
-        elif info < 0:
-            logger.error("%s solver error (info=%s)",
-                         SOLVER_METHOD_NAME.upper(), info)
 
         if progress_callback:
             progress_callback("Computing branch fluxes...")
@@ -147,6 +150,10 @@ class FluxCalculator:
                 'method': SOLVER_METHOD_NAME,
                 'tolerance': tolerance,
                 'info': int(info),
+                'reference_element_id': self.reluctance_data[0]['element_id'],
+                'residual_norm': self._solver_residual_norm,
+                'relative_residual': self._solver_relative_residual,
+                'source_balance': self._solver_source_balance,
             },
             'statistics': statistics,
             'neighbor_connectivity': self.neighbors,
@@ -164,8 +171,8 @@ class FluxCalculator:
         """Find up/down/left/right neighbours from element centre positions."""
         elements = [{
             'element_id': data['element_id'],
-            'r': round(data['center']['r'], 3),
-            'theta': round(data['center']['theta'], 3),
+            'r': float(data['center']['r']),
+            'theta': float(data['center']['theta']),
         } for data in self.reluctance_data]
 
         neighbors = {element['element_id']:
@@ -265,8 +272,8 @@ class FluxCalculator:
                 opposite = OPPOSITE_DIRECTION[direction]
                 total_reluctance = (rel_i['R_' + direction]
                                     + reluctance_lookup[neighbor_id]['R_' + opposite])
-                if total_reluctance == 0:
-                    continue
+                if not np.isfinite(total_reluctance) or total_reluctance <= 0:
+                    raise ValueError('Branch reluctances must be finite and positive.')
 
                 nbr_idx[direction][i] = id_to_idx[neighbor_id]
                 inv_R[direction][i] = 1.0 / total_reluctance
@@ -288,6 +295,8 @@ class FluxCalculator:
         self._cached_matrix = coo_matrix(
             (np.concatenate(data), (np.concatenate(rows), np.concatenate(cols))),
             shape=(n, n), dtype=np.float64).tocsr()
+        self._cached_reduced_matrix = None
+        self._cached_preconditioner = None
         self._cached_id_to_idx = id_to_idx
         self._cached_eids = [data['element_id'] for data in self.reluctance_data]
         self._cached_nbr_idx = nbr_idx
@@ -306,14 +315,19 @@ class FluxCalculator:
         rin = np.empty(n, dtype=np.float64)
         rout = np.empty(n, dtype=np.float64)
         r_center = np.empty(n, dtype=np.float64)
+        theta_span = np.empty(n, dtype=np.float64)
         for idx, data in enumerate(self.reluctance_data):
             geometry = data['geometry']
             rin[idx] = geometry['rin']
             rout[idx] = geometry['rout']
             r_center[idx] = data['center']['r']
+            theta_span[idx] = np.radians(
+                geometry['theta_end'] - geometry['theta_start'])
         return {'rin_m': rin / 1000.0,
                 'rout_m': rout / 1000.0,
-                'r_center_m': r_center / 1000.0}
+                'r_center_m': r_center / 1000.0,
+                'theta_span_rad': theta_span,
+                'log_ratio': np.log(rout / rin)}
 
     def _mmf_arrays(self):
         """Per-element MMF source arrays (up/down/left/right), aligned to the
@@ -321,11 +335,27 @@ class FluxCalculator:
         the RHS and the branch-flux computation."""
         n = len(self.reluctance_data)
 
+        # Signed positive-radial MMF integrals from centre to each radial
+        # face. Unequal halves are needed for distributed winding sources.
+        up, down = self._element_mmf_up, self._element_mmf_down
+        if up is not None or down is not None:
+            if up is None or down is None or len(up) != n or len(down) != n:
+                raise ValueError('Both radial MMF arrays must align with the mesh.')
+            up = np.asarray(up, dtype=np.float64)
+            down = np.asarray(down, dtype=np.float64)
+            if (up.shape != (n,) or down.shape != (n,)
+                    or not np.isfinite(up).all() or not np.isfinite(down).all()):
+                raise ValueError('Radial MMF arrays must contain finite scalars.')
+            zeros = np.zeros(n, dtype=np.float64)
+            return {'up': up, 'down': down, 'left': zeros, 'right': zeros}
+
         # Fast path: the teeth/slot calculator already produced an aligned
         # up/down MMF array (MMF_up == MMF_down; left/right are always 0).
         element_mmf_ud = self._element_mmf_ud
         if element_mmf_ud is not None and len(element_mmf_ud) == n:
             ud = np.asarray(element_mmf_ud, dtype=np.float64)
+            if ud.shape != (n,) or not np.isfinite(ud).all():
+                raise ValueError('Radial MMF arrays must contain finite scalars.')
             zeros = np.zeros(n, dtype=np.float64)
             return {'up': ud, 'down': ud, 'left': zeros, 'right': zeros}
 
@@ -341,12 +371,12 @@ class FluxCalculator:
                 continue
             for direction in DIRECTIONS:
                 arrays[direction][idx] = mmf_values.get('MMF_' + direction, 0.0)
-
+        if not all(np.isfinite(values).all() for values in arrays.values()):
+            raise ValueError('MMF sources must be finite.')
         return arrays
 
     def _build_rhs_vector(self):
-        """Vectorised MMF-driven RHS. Only the radial (up/down) branches carry
-        MMF sources, matching the original per-term assembly exactly."""
+        """Negative divergence of the exact sources used by every branch."""
         self._mmf_arr = self._mmf_arrays()
         mmf = self._mmf_arr
         inv_R = self._cached_inv_R
@@ -356,22 +386,66 @@ class FluxCalculator:
         up_term = (mmf['up'] + mmf['down'][safe_j['up']]) * inv_R['up']
         # down branch: sign +1, neighbour contributes its 'up' MMF.
         down_term = (mmf['down'] + mmf['up'][safe_j['down']]) * inv_R['down']
-        return down_term - up_term
+        left_term = (mmf['left'] + mmf['right'][safe_j['left']]) * inv_R['left']
+        right_term = (mmf['right'] + mmf['left'][safe_j['right']]) * inv_R['right']
+        return down_term - up_term + right_term - left_term
 
     # ---------------------------------------------------------------- solve
 
     @staticmethod
     def _build_jacobi_preconditioner(matrix):
         diag = matrix.diagonal().astype(np.float64)
-        safe_diag = np.where(np.abs(diag) > 1e-14, diag, 1.0)
-        inv_diag = 1.0 / safe_diag
+        if not np.isfinite(diag).all() or np.any(diag <= 0):
+            raise ValueError('The magnetic network has an invalid or isolated node.')
+        inv_diag = 1.0 / diag
         return LinearOperator(shape=matrix.shape,
                               matvec=lambda x: inv_diag * x,
                               dtype=np.float64)
 
     def _solve_linear_system(self, matrix, rhs, tolerance):
-        preconditioner = self._build_jacobi_preconditioner(matrix)
-        return cg(matrix, rhs, M=preconditioner, rtol=tolerance)
+        """Fix one potential reference without adding an artificial flux path.
+
+        Missing boundary branches impose zero normal flux. The remaining
+        graph Laplacian has one arbitrary constant potential; deleting the
+        reference row and column makes the connected system positive definite.
+        """
+        rhs = np.asarray(rhs, dtype=np.float64)
+        n = matrix.shape[0]
+        if n == 0 or rhs.shape != (n,):
+            raise ValueError('The magnetic network must contain aligned nodes and sources.')
+        if not np.isfinite(matrix.data).all() or not np.isfinite(rhs).all():
+            raise ValueError('The magnetic system contains non-finite values.')
+        self._solver_source_balance = float(rhs.sum())
+        source_scale = float(np.abs(rhs).sum())
+        if abs(self._solver_source_balance) > max(source_scale, 1e-300) * 1e-10:
+            raise ValueError('The closed magnetic network has unbalanced sources.')
+        potentials = np.zeros(n, dtype=np.float64)
+        info = 0
+        if n > 1 and np.any(rhs):
+            if matrix is self._cached_matrix:
+                if self._cached_reduced_matrix is None:
+                    self._cached_reduced_matrix = matrix[1:, 1:].tocsr()
+                    self._cached_preconditioner = self._build_jacobi_preconditioner(
+                        self._cached_reduced_matrix)
+                reduced = self._cached_reduced_matrix
+                preconditioner = self._cached_preconditioner
+            else:
+                reduced = matrix[1:, 1:].tocsr()
+                preconditioner = self._build_jacobi_preconditioner(reduced)
+            potentials[1:], info = cg(reduced, rhs[1:], M=preconditioner,
+                                      rtol=tolerance)
+        residual = matrix @ potentials - rhs
+        self._solver_residual_norm = float(np.linalg.norm(residual))
+        rhs_norm = float(np.linalg.norm(rhs))
+        self._solver_relative_residual = (
+            self._solver_residual_norm / rhs_norm if rhs_norm else
+            self._solver_residual_norm)
+        if (info != 0 or not np.isfinite(potentials).all()
+                or not np.isfinite(self._solver_relative_residual)
+                or self._solver_relative_residual > max(10 * tolerance, 1e-12)):
+            raise RuntimeError(f'Magnetic solver did not converge (info={info}, '
+                               f'relative residual={self._solver_relative_residual:.3e}).')
+        return potentials, info
 
     # ------------------------------------------------------------- results
 
@@ -414,21 +488,24 @@ class FluxCalculator:
         machine_params = reluctance_results.get('machine_parameters', {})
         axial_length_m = machine_params.get(
             'axial_length', DEFAULT_AXIAL_LENGTH_MM) / 1000
-        mesh_angle_rad = np.radians(reluctance_results.get('mesh_angle', 10))
 
         geometry = self._cached_geometry
         branch = self._branch_flux_array
         flux_up, flux_down = branch[:, 0], branch[:, 1]
         flux_left, flux_right = branch[:, 2], branch[:, 3]
 
-        # Br = net radial flux / (arc length × axial length)
-        area_radial = geometry['r_center_m'] * mesh_angle_rad * axial_length_m
-        br = np.divide(flux_up - flux_down, area_radial,
+        # Opposite outward face fluxes describe the same field twice: average
+        # them, rather than taking their unscaled difference.
+        area_radial = (geometry['r_center_m'] * geometry['theta_span_rad']
+                       * axial_length_m)
+        br = np.divide(0.5 * (flux_up - flux_down), area_radial,
                        out=np.zeros_like(area_radial), where=area_radial > 0)
 
-        # Btheta = net circumferential flux / (radial depth × axial length)
-        area_circumferential = (geometry['rout_m'] - geometry['rin_m']) * axial_length_m
-        btheta = np.divide(flux_left - flux_right, area_circumferential,
+        # Right is increasing theta. The centre field for Btheta=C/r uses
+        # Phi_theta = C L log(rout/rin), consistent with angular reluctance.
+        area_circumferential = (geometry['r_center_m'] * geometry['log_ratio']
+                               * axial_length_m)
+        btheta = np.divide(0.5 * (flux_right - flux_left), area_circumferential,
                            out=np.zeros_like(area_circumferential),
                            where=area_circumferential > 0)
 

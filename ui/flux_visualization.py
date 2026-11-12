@@ -14,6 +14,8 @@ import numpy as np
 from matplotlib.collections import PatchCollection
 from matplotlib.patches import Circle, Wedge
 
+from core.flux_contours import reconstruct_flux_potential
+
 try:
     from scipy.interpolate import griddata
     from scipy.ndimage import gaussian_filter
@@ -21,7 +23,7 @@ except Exception:  # pragma: no cover - scipy is expected but optional here
     griddata = None
     gaussian_filter = None
 
-from utils.constants import DEFAULT_MACHINE_PARAMS
+from utils.constants import DEFAULT_AXIAL_LENGTH_MM, DEFAULT_MACHINE_PARAMS
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +32,8 @@ MAX_ELEMENTS_WITH_EDGES = 5000
 # Cap on scattered points handed to scipy.griddata.
 MAX_INTERPOLATION_POINTS = 8000
 GEOMETRY_CACHE_LIMIT = 4
-PLOT_LIMIT_MARGIN = 1.2
+PLOT_LIMIT_MARGIN = 1.08
+DEFAULT_CONTOUR_COUNT = 36
 
 STREAMPLOT_KWARGS = dict(
     density=1.1,
@@ -83,6 +86,8 @@ class FluxDensityVisualizer:
         center_y = np.zeros(num_elements, dtype=np.float64)
         cos_theta = np.zeros(num_elements, dtype=np.float64)
         sin_theta = np.zeros(num_elements, dtype=np.float64)
+        radial_area_per_length = np.zeros(num_elements, dtype=np.float64)
+        tangential_area_per_length = np.zeros(num_elements, dtype=np.float64)
 
         for idx, element in enumerate(mesh_elements):
             element_ids.append(element.get('element_id', element.get('id')))
@@ -100,10 +105,16 @@ class FluxDensityVisualizer:
 
             cos_theta[idx] = np.cos(theta_rad)
             sin_theta[idx] = np.sin(theta_rad)
+            radial_area_per_length[idx] = r_center * 1e-3 * np.radians(theta_end - theta_start)
+            tangential_area_per_length[idx] = r_center * 1e-3 * np.log(rout / rin)
             center_x[idx] = r_center * cos_theta[idx]
             center_y[idx] = r_center * sin_theta[idx]
 
         geometry = {
+            # Keep the source alive while its id is used as a cache key.
+            # Otherwise Python can reuse the id for a different mesh with
+            # the same element count and return old coordinates/materials.
+            '_mesh_elements_source': mesh_elements,
             'patches': patches,
             'element_ids': element_ids,
             'materials': materials,
@@ -111,6 +122,8 @@ class FluxDensityVisualizer:
             'center_y': center_y,
             'cos_theta': cos_theta,
             'sin_theta': sin_theta,
+            'radial_area_per_length': radial_area_per_length,
+            'tangential_area_per_length': tangential_area_per_length,
         }
 
         if len(self._mesh_geometry_cache) >= GEOMETRY_CACHE_LIMIT:
@@ -170,8 +183,14 @@ class FluxDensityVisualizer:
                 b_values[idx] = float(density_data.get('B_magnitude', 0.0))
         return b_values
 
-    def _extract_branch_flux_vectors(self, branch_fluxes, geometry):
-        """Cartesian flux vectors from up/down/left/right branch fluxes."""
+    def _extract_branch_flux_vectors(self, branch_fluxes, geometry,
+                                     machine_params=None):
+        """Physical Cartesian B from branch fluxes and their distinct areas.
+
+        A polar cell's radial and tangential faces generally have different
+        areas. Adding raw branch fluxes as vector components distorts the
+        field-line direction, especially across a thin air gap.
+        """
         element_ids = geometry['element_ids']
         cos_theta = geometry['cos_theta']
         sin_theta = geometry['sin_theta']
@@ -179,6 +198,10 @@ class FluxDensityVisualizer:
         size = len(element_ids)
         fx_values = np.zeros(size, dtype=np.float64)
         fy_values = np.zeros(size, dtype=np.float64)
+        axial_length_m = (machine_params or {}).get(
+            'axial_length', DEFAULT_AXIAL_LENGTH_MM) * 1e-3
+        radial_areas = geometry['radial_area_per_length'] * axial_length_m
+        tangential_areas = geometry['tangential_area_per_length'] * axial_length_m
 
         for idx, eid in enumerate(element_ids):
             flux_data = self._lookup_element_data(branch_fluxes, eid)
@@ -190,11 +213,12 @@ class FluxDensityVisualizer:
                                  - float(flux_data.get('down', 0.0)))
             flux_tangential = 0.5 * (float(flux_data.get('right', 0.0))
                                      - float(flux_data.get('left', 0.0)))
+            br = flux_radial / radial_areas[idx] if radial_areas[idx] > 0 else 0.0
+            btheta = (flux_tangential / tangential_areas[idx]
+                      if tangential_areas[idx] > 0 else 0.0)
 
-            fx_values[idx] = (flux_radial * cos_theta[idx]
-                              - flux_tangential * sin_theta[idx])
-            fy_values[idx] = (flux_radial * sin_theta[idx]
-                              + flux_tangential * cos_theta[idx])
+            fx_values[idx] = br * cos_theta[idx] - btheta * sin_theta[idx]
+            fy_values[idx] = br * sin_theta[idx] + btheta * cos_theta[idx]
 
         return fx_values, fy_values
 
@@ -310,16 +334,17 @@ class FluxDensityVisualizer:
         ax.set_aspect('equal')
         ax.set_xlim(-limit, limit)
         ax.set_ylim(-limit, limit)
-        ax.set_title(title, color='black', fontsize=14, pad=20)
-        ax.set_xlabel('X (mm)', color='black')
-        ax.set_ylabel('Y (mm)', color='black')
-        ax.tick_params(colors='black', which='both')
+        ax.set_title(title, color='#243244', fontsize=11, pad=14)
+        ax.set_xlabel('x [mm]', color='#65758a', fontsize=9)
+        ax.set_ylabel('y [mm]', color='#65758a', fontsize=9)
+        ax.tick_params(colors='#65758a', which='both', labelsize=8, length=3)
         for spine in ax.spines.values():
-            spine.set_color('black')
+            spine.set_color('#d9e1e9')
 
     @staticmethod
     def _clear_axis(ax, figure):
         ax.clear()
+        figure._flux_contour_info = None
         ax.set_facecolor('white')
         figure.patch.set_facecolor('white')
 
@@ -336,24 +361,24 @@ class FluxDensityVisualizer:
             geometry = self._get_mesh_geometry(mesh_elements)
             b_values, _, _ = self._extract_flux_arrays(flux_densities, geometry)
 
-            if np.max(b_values) == 0:
+            if not flux_densities:
                 return self.generate_material_based_heatmap(
                     ax, figure, geometry, machine_params)
 
             num_elements = len(mesh_elements)
-            show_edges = num_elements <= MAX_ELEMENTS_WITH_EDGES
             patch_collection = PatchCollection(
                 geometry['patches'],
-                linewidths=0.1 if show_edges else 0.0,
-                edgecolors='black' if show_edges else 'none')
+                linewidths=0.0, edgecolors='none', antialiaseds=False)
 
             patch_collection.set_array(b_values)
             patch_collection.set_cmap(plt.cm.turbo)
             patch_collection.set_norm(colors.Normalize(
-                vmin=np.min(b_values), vmax=np.max(b_values)))
+                vmin=0.0, vmax=max(float(np.max(b_values)), 1e-12)))
             ax.add_collection(patch_collection)
+            self._draw_geometry_edges(ax, machine_params)
 
-            cbar = figure.colorbar(patch_collection, ax=ax, shrink=0.8, aspect=20)
+            cbar = figure.colorbar(patch_collection, ax=ax, shrink=0.86,
+                                   fraction=0.045, pad=0.035, aspect=28, panchor=(0.5, 0.5))
             cbar.set_label('Flux Density |B| (T)', color='black', fontsize=12)
             cbar.ax.tick_params(colors='black')
 
@@ -394,17 +419,16 @@ class FluxDensityVisualizer:
         self._clear_axis(ax, figure)
         geometry = self._get_mesh_geometry(mesh_elements)
         num_elements = len(mesh_elements)
-        show_edges = num_elements <= MAX_ELEMENTS_WITH_EDGES
-
         collection = PatchCollection(
             geometry['patches'],
-            linewidths=0.1 if show_edges else 0.0,
-            edgecolors='black' if show_edges else 'none')
+            linewidths=0.0, edgecolors='none', antialiaseds=False)
         collection.set_cmap(plt.cm.turbo)
         collection.set_array(np.zeros(num_elements, dtype=np.float64))
         ax.add_collection(collection)
+        self._draw_geometry_edges(ax, machine_params)
 
-        cbar = figure.colorbar(collection, ax=ax, shrink=0.8, aspect=20)
+        cbar = figure.colorbar(collection, ax=ax, shrink=0.86,
+                               fraction=0.045, pad=0.035, aspect=28, panchor=(0.5, 0.5))
         cbar.set_label('Flux Density |B| (T)', color='black', fontsize=12)
         cbar.ax.tick_params(colors='black')
 
@@ -415,10 +439,8 @@ class FluxDensityVisualizer:
             if b_values.size == 0:
                 return False
             vmax = float(np.max(b_values))
-            if vmax <= 0:
-                return False
             collection.set_array(b_values)
-            collection.set_clim(float(np.min(b_values)), vmax)
+            collection.set_clim(0.0, max(vmax, 1e-12))
             return True
 
         return update
@@ -456,15 +478,32 @@ class FluxDensityVisualizer:
 
     def generate_flux_lines_visualisation(self, ax, figure, mesh_data,
                                           branch_fluxes, machine_params,
-                                          grid_resolution=None):
-        """Streamplot of flux lines computed from branch fluxes."""
+                                          grid_resolution=None,
+                                          flux_densities=None,
+                                          contour_count=DEFAULT_CONTOUR_COUNT):
+        """Equal-flux Az contours on the solved polar mesh."""
         try:
             self._clear_axis(ax, figure)
 
+            try:
+                self._draw_flux_contours(ax, figure, mesh_data, branch_fluxes,
+                                         machine_params, contour_count)
+            except ValueError:
+                # Partial legacy meshes retain their physical-B vector view.
+                figure._flux_contour_info = None
+            else:
+                self.draw_machine_cross_section_background(ax, machine_params)
+                self._apply_common_axis_style(ax, machine_params, 'Magnetic flux lines')
+                return True
+
             mesh_elements = mesh_data['mesh_elements']
             geometry = self._get_mesh_geometry(mesh_elements)
-            bx_values, by_values = self._extract_branch_flux_vectors(
-                branch_fluxes, geometry)
+            if flux_densities is not None:
+                _, bx_values, by_values = self._extract_flux_arrays(
+                    flux_densities, geometry)
+            else:
+                bx_values, by_values = self._extract_branch_flux_vectors(
+                    branch_fluxes, geometry, machine_params)
 
             if not np.any(np.sqrt(bx_values ** 2 + by_values ** 2) > 0):
                 return False
@@ -506,7 +545,7 @@ class FluxDensityVisualizer:
                                    **STREAMPLOT_KWARGS)
 
             cbar = figure.colorbar(stream.lines, ax=ax, shrink=0.8, aspect=20)
-            cbar.set_label('Branch Flux |Φ| (Wb)', color='black', fontsize=12)
+            cbar.set_label('Flux Density |B| (T)', color='black', fontsize=12)
             cbar.ax.tick_params(colors='black')
 
             self._apply_common_axis_style(ax, machine_params,
@@ -520,7 +559,8 @@ class FluxDensityVisualizer:
     def generate_flux_line_density_visualisation(self, ax, figure, mesh_data,
                                                  flux_densities, branch_fluxes,
                                                  machine_params,
-                                                 grid_resolution=None):
+                                                 grid_resolution=None,
+                                                 contour_count=DEFAULT_CONTOUR_COUNT):
         """|B| heatmap with black flux lines overlaid."""
         try:
             self._clear_axis(ax, figure)
@@ -530,38 +570,38 @@ class FluxDensityVisualizer:
             b_values, _, _ = self._extract_flux_arrays(flux_densities, geometry)
 
             if np.max(b_values) == 0:
-                return self.generate_flux_lines_visualisation(
-                    ax, figure, mesh_data, branch_fluxes, machine_params,
-                    grid_resolution=grid_resolution)
+                return self.generate_flux_density_heatmap(
+                    ax, figure, mesh_data, flux_densities, machine_params)
 
             num_elements = len(mesh_elements)
-            show_edges = num_elements <= MAX_ELEMENTS_WITH_EDGES
-
             patch_collection = PatchCollection(
                 geometry['patches'],
-                linewidths=0.1 if show_edges else 0.0,
-                edgecolors='black' if show_edges else 'none',
-                alpha=0.65)
+                linewidths=0.0, edgecolors='none', antialiaseds=False)
             patch_collection.set_array(b_values)
             patch_collection.set_cmap(plt.cm.turbo)
             patch_collection.set_norm(colors.Normalize(
-                vmin=np.min(b_values), vmax=np.max(b_values)))
+                vmin=0.0, vmax=max(float(np.max(b_values)), 1e-12)))
             ax.add_collection(patch_collection)
 
-            cbar = figure.colorbar(patch_collection, ax=ax, shrink=0.8, aspect=20)
+            cbar = figure.colorbar(patch_collection, ax=ax, shrink=0.86,
+                                   fraction=0.045, pad=0.035, aspect=28, panchor=(0.5, 0.5))
             cbar.set_label('Flux Density |B| (T)', color='black', fontsize=12)
             cbar.ax.tick_params(colors='black')
 
-            self._overlay_flux_lines(ax, geometry, branch_fluxes,
-                                     machine_params, num_elements,
-                                     grid_resolution)
+            try:
+                self._draw_flux_contours(ax, figure, mesh_data, branch_fluxes,
+                                         machine_params, contour_count)
+            except ValueError:
+                figure._flux_contour_info = None
+                self._overlay_flux_lines(ax, geometry, branch_fluxes,
+                                         machine_params, num_elements,
+                                         grid_resolution, flux_densities)
+            self._draw_geometry_edges(ax, machine_params)
 
             max_b = np.max(b_values)
-            avg_b = np.mean(b_values[b_values > 0]) if np.any(b_values > 0) else 0
             self._apply_common_axis_style(
                 ax, machine_params,
-                f'Flux Line + Density\n{num_elements:,} Elements | '
-                f'Max B: {max_b:.3f} T | Avg B: {avg_b:.3f} T')
+                f'Flux density and flux lines  ·  Peak {max_b:.3f} T')
             return True
 
         except Exception as error:
@@ -569,11 +609,64 @@ class FluxDensityVisualizer:
                 "Error generating flux line + density visualisation: %s", error)
             return False
 
+    @staticmethod
+    def _draw_flux_contours(ax, figure, mesh_data, branch_fluxes, machine_params,
+                            contour_count):
+        length_mm = float(machine_params.get('axial_length', DEFAULT_AXIAL_LENGTH_MM))
+        field = reconstruct_flux_potential(mesh_data, branch_fluxes, length_mm)
+        count = int(np.clip(contour_count, 4, 100))
+        low, high = float(field.potential.min()), float(field.potential.max())
+        figure._flux_contour_info = {
+            'count': count, 'flux_step_wb': (high - low) / (count + 1) * length_mm * 1e-3,
+            'relative_residual': field.relative_residual,
+        }
+        if high - low <= max(abs(high), abs(low), 1e-30) * 1e-12:
+            figure._flux_contour_info['count'] = 0
+            ax.text(0.5, 0.5, 'Zero magnetic flux', transform=ax.transAxes,
+                    ha='center', va='center', color='#65758a', fontsize=10)
+            return
+
+        # Piecewise linear theta / log(r) interpolation preserves face fluxes
+        # while resolving circular arcs. Each material boundary stays a knot.
+        angles = np.concatenate([
+            np.linspace(a, b, max(1, int(np.ceil((b - a) / 0.75))), endpoint=False)
+            for a, b in zip(field.angles_deg[:-1], field.angles_deg[1:])]
+            + [field.angles_deg[-1:]])
+        radial_subdivisions = max(1, min(3, 200000 // (len(field.radii_mm) * len(angles))))
+        radii = np.concatenate([
+            np.geomspace(a, b, radial_subdivisions + 1)[:-1]
+            for a, b in zip(field.radii_mm[:-1], field.radii_mm[1:])]
+            + [field.radii_mm[-1:]])
+        angular_values = np.asarray([np.interp(angles, field.angles_deg, row)
+                                     for row in field.potential])
+        values = np.asarray([np.interp(np.log(radii), np.log(field.radii_mm), column)
+                             for column in angular_values.T]).T
+        theta = np.radians(angles)
+        x = radii[:, None] * np.cos(theta)
+        y = radii[:, None] * np.sin(theta)
+        x[:, -1], y[:, -1] = x[:, 0], y[:, 0]
+        levels = np.linspace(low, high, count + 2)[1:-1]
+        ax.contour(x, y, values, levels=levels, colors='#162330', linewidths=0.7,
+                   linestyles='solid', antialiased=True, zorder=5)
+
+    def _draw_geometry_edges(self, ax, machine_params):
+        first_patch = len(ax.patches)
+        self.draw_machine_cross_section_background(ax, machine_params)
+        for patch in list(ax.patches)[first_patch:]:
+            patch.set_facecolor('none')
+            patch.set_edgecolor('#465361')
+            patch.set_alpha(0.65)
+            patch.set_linewidth(0.45)
+            patch.set_zorder(6)
+
     def _overlay_flux_lines(self, ax, geometry, branch_fluxes, machine_params,
-                            num_elements, grid_resolution):
+                            num_elements, grid_resolution, flux_densities=None):
         """Black streamlines on top of an existing heatmap."""
-        bx_values, by_values = self._extract_branch_flux_vectors(
-            branch_fluxes, geometry)
+        if flux_densities is not None:
+            _, bx_values, by_values = self._extract_flux_arrays(flux_densities, geometry)
+        else:
+            bx_values, by_values = self._extract_branch_flux_vectors(
+                branch_fluxes, geometry, machine_params)
         if not np.any(np.sqrt(bx_values ** 2 + by_values ** 2) > 0):
             return
 
@@ -643,7 +736,7 @@ class FluxDensityVisualizer:
             ax.add_patch(Wedge(
                 (0, 0), stator_outer_radius, 0, 360,
                 width=max(0.1, stator_outer_radius - tooth_tip_radius),
-                facecolor="#4a90e2", edgecolor="#2b4f77", alpha=0.25,
+                facecolor="#e8edf2", edgecolor="#637284", alpha=1.0,
                 linewidth=0.8, zorder=0))
 
             for i in range(num_slots):
@@ -653,7 +746,7 @@ class FluxDensityVisualizer:
                         (0, 0), tooth_tip_radius, tooth_start,
                         tooth_start + tooth_angle,
                         width=max(0.1, tooth_tip_radius - stator_inner_radius),
-                        facecolor="#4a90e2", edgecolor="#2b4f77", alpha=0.28,
+                        facecolor="#e8edf2", edgecolor="#637284", alpha=1.0,
                         linewidth=0.6, zorder=0.2))
 
                 if slot_angle > 0:
@@ -669,13 +762,13 @@ class FluxDensityVisualizer:
                 ax.add_patch(Wedge(
                     (0, 0), stator_inner_radius, 0, 360,
                     width=max(0.1, stator_inner_radius - rotor_outer_radius),
-                    facecolor="#DDDDDD", edgecolor="#888888", alpha=0.45,
+                    facecolor="#ffffff", edgecolor="#637284", alpha=1.0,
                     linewidth=0.6, zorder=0.1))
 
             ax.add_patch(Wedge(
                 (0, 0), rotor_outer_radius, 0, 360,
                 width=max(0.1, rotor_outer_radius - shaft_radius),
-                facecolor="#666666", edgecolor="#3A3A3A", alpha=0.30,
+                facecolor="#e8edf2", edgecolor="#637284", alpha=1.0,
                 linewidth=0.8, zorder=0.15))
 
             ax.add_patch(Circle(
@@ -722,17 +815,21 @@ def setup_heatmap_animation(ax, figure, mesh_data, machine_params):
 
 
 def generate_flux_lines_visualisation(ax, figure, mesh_data, branch_fluxes,
-                                      machine_params, grid_resolution=None):
+                                      machine_params, grid_resolution=None,
+                                      flux_densities=None,
+                                      contour_count=DEFAULT_CONTOUR_COUNT):
     """Module-level convenience wrapper around the shared visualizer."""
     return _VISUALIZER.generate_flux_lines_visualisation(
-        ax, figure, mesh_data, branch_fluxes, machine_params, grid_resolution)
+        ax, figure, mesh_data, branch_fluxes, machine_params, grid_resolution,
+        flux_densities=flux_densities, contour_count=contour_count)
 
 
 def generate_flux_line_density_visualisation(ax, figure, mesh_data,
                                              flux_densities, branch_fluxes,
                                              machine_params,
-                                             grid_resolution=None):
+                                             grid_resolution=None,
+                                             contour_count=DEFAULT_CONTOUR_COUNT):
     """Module-level convenience wrapper around the shared visualizer."""
     return _VISUALIZER.generate_flux_line_density_visualisation(
         ax, figure, mesh_data, flux_densities, branch_fluxes, machine_params,
-        grid_resolution)
+        grid_resolution, contour_count=contour_count)

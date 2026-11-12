@@ -46,6 +46,8 @@ class ReluctanceCalculator:
 
         axial_length_m = float(
             machine_params.get('axial_length', DEFAULT_AXIAL_LENGTH_MM)) / 1000
+        if not np.isfinite(axial_length_m) or axial_length_m <= 0:
+            raise ValueError('Axial length must be finite and positive.')
         mesh_angle = mesh_data.get('mesh_stats', {}).get('mesh_angle', 10)
         total_elements = len(self.mesh_elements)
 
@@ -113,22 +115,27 @@ class ReluctanceCalculator:
 
         ur = self.get_material_permeability(element['material'])
         mu = ur * MU0
+        if (not all(np.isfinite(v) for v in (
+                rin_m, rout_m, theta_span, axial_length_m))
+                or rin_m <= 0 or rout_m <= rin_m
+                or theta_span <= 0 or axial_length_m <= 0):
+            raise ValueError('Mesh cells require positive finite radii, angular '
+                             'width and axial length, with rout greater than rin.')
 
-        if rout_m > rin_m:
-            log_ratio = np.log(rout_m / rin_m)
-            r_radial = log_ratio / (2 * theta_span * mu * axial_length_m)
-            r_circumferential = theta_span / (2 * mu * axial_length_m * log_ratio)
-        else:
-            # Zero-thickness element: infinite reluctance.
-            r_radial = float('inf')
-            r_circumferential = float('inf')
+        log_ratio = np.log(rout_m / rin_m)
+        r_center = (rin_m + rout_m) / 2
+        # The unknown is located at the arithmetic cell centre. Splitting
+        # log(rout/rin) equally would instead locate it at sqrt(rin*rout).
+        r_up = np.log(rout_m / r_center) / (theta_span * mu * axial_length_m)
+        r_down = np.log(r_center / rin_m) / (theta_span * mu * axial_length_m)
+        r_circumferential = theta_span / (2 * mu * axial_length_m * log_ratio)
 
         return {
-            'R_up': r_radial,
-            'R_down': r_radial,
+            'R_up': r_up,
+            'R_down': r_down,
             'R_left': r_circumferential,
             'R_right': r_circumferential,
-            'R_avg': (r_radial + r_circumferential) / 2,
+            'R_avg': (r_up + r_down + 2 * r_circumferential) / 4,
             'permeability': mu,
             'relative_permeability': ur,
         }
@@ -136,7 +143,11 @@ class ReluctanceCalculator:
     def get_material_permeability(self, material):
         """Relative permeability for a mesh material (air when unknown)."""
         ur_key = MATERIAL_PERMEABILITY_KEYS.get(material, 'ur_air')
-        return self.material_permeabilities.get(ur_key, 1.0)
+        ur = float(self.material_permeabilities.get(ur_key, 1.0))
+        if not np.isfinite(ur) or ur <= 0:
+            raise ValueError('Material relative permeabilities must be finite '
+                             'and positive.')
+        return ur
 
     @staticmethod
     def _statistics_by_region(reluctance_data):
