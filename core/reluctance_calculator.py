@@ -57,12 +57,36 @@ class ReluctanceCalculator:
         reluctance_data = []
         region_stats = defaultdict(int)
 
-        for i, element in enumerate(self.mesh_elements):
+        # Evaluate the same annular-sector formulas in one NumPy pass rather
+        # than repeating scalar logarithms and validation for every cell.
+        geometry = np.asarray([
+            (e['rin'], e['rout'], e['theta_end']-e['theta_start'])
+            for e in self.mesh_elements], dtype=float).reshape(-1, 3)
+        rin, rout, span = geometry.T
+        rin, rout, span = rin/1000, rout/1000, np.radians(span)
+        if (not np.isfinite(geometry).all() or np.any(rin <= 0)
+                or np.any(rout <= rin) or np.any(span <= 0)):
+            raise ValueError('Mesh cells require positive finite radii, angular '
+                             'width and axial length, with rout greater than rin.')
+        permeabilities = {material: self.get_material_permeability(material)
+                          for material in {e['material'] for e in self.mesh_elements}}
+        ur = np.fromiter((permeabilities[e['material']] for e in self.mesh_elements),
+                         dtype=float, count=total_elements)
+        mu = ur * MU0
+        center = (rin+rout)/2
+        up = np.log(rout/center)/(span*mu*axial_length_m)
+        down = np.log(center/rin)/(span*mu*axial_length_m)
+        side = span/(2*mu*axial_length_m*np.log(rout/rin))
+        # Python floats keep the export schema identical to the scalar API.
+        rows = zip(up.tolist(), down.tolist(), side.tolist(), mu.tolist(), ur.tolist())
+
+        for i, (element, values) in enumerate(zip(self.mesh_elements, rows)):
             if progress_callback and i % PROGRESS_REPORT_INTERVAL == 0 and i > 0:
                 progress = int((i / total_elements) * 100)
                 progress_callback(
                     f"Processing elements... {progress}% ({i:,}/{total_elements:,})")
 
+            r_up, r_down, r_side, permeability, relative = values
             reluctance_data.append({
                 'element_id': i + 1,
                 'material': element['material'],
@@ -72,8 +96,12 @@ class ReluctanceCalculator:
                     'theta_start': element['theta_start'],
                     'theta_end': element['theta_end'],
                 },
-                'reluctances': self.calculate_element_reluctance(
-                    element, axial_length_m),
+                'reluctances': {
+                    'R_up': r_up, 'R_down': r_down,
+                    'R_left': r_side, 'R_right': r_side,
+                    'R_avg': (r_up+r_down+2*r_side)/4,
+                    'permeability': permeability, 'relative_permeability': relative,
+                },
                 'center': {
                     'r': (element['rin'] + element['rout']) / 2,
                     'theta': (element['theta_start'] + element['theta_end']) / 2,

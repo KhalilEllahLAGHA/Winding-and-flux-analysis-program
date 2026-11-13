@@ -1,0 +1,9 @@
+# Preserve generated documents and media byte-for-byte on Windows checkouts.
+*.pdf binary
+*.mp4 binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ico binary
+# Keep the pinned upstream module byte-identical to the recorded source.
+third_party/dolomites/koil.py -text

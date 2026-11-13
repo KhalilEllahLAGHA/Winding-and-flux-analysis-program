@@ -4,19 +4,20 @@ matrix dialog, data export, and the resultant-MMF animation window."""
 import logging
 
 import pandas as pd
-from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
-from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtWidgets import (QCheckBox, QComboBox, QDialog, QDoubleSpinBox, QFileDialog,
-                             QFrame, QGroupBox,
+from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDoubleSpinBox, QFileDialog,
+                             QFrame, QGridLayout, QGroupBox,
                              QHBoxLayout, QHeaderView, QLabel, QPushButton,
-                             QSpinBox, QStyleFactory,
+                             QSpinBox, QStyleFactory, QScrollArea,
                              QTableWidget, QTableWidgetItem, QVBoxLayout,
                              QWidget)
 
-from core.mmf_engine import DOUBLE_LAYER_ROWS, MMFCalculationEngine
+from core.mmf_engine import MMFCalculationEngine
+from utils.phases import phase_names, phase_color
 from ui.theme import (DOUBLE_SPIN_BOX_STYLE, MATRIX_DIALOG_STYLE, SPIN_BOX_STYLE,
-                      badge_style)
+                      TEXT, badge_style)
 from utils.constants import (ANIMATION_FRAME_INTERVAL_MS,
                              ANIMATION_SPEED_STEPS_DEG,
                              DEFAULT_ANIMATION_SPEED,
@@ -28,11 +29,18 @@ from utils.constants import (ANIMATION_FRAME_INTERVAL_MS,
 
 logger = logging.getLogger(__name__)
 
-PHASE_PLOT_STYLES = {'A': ('red', '-'), 'B': ('blue', '-'), 'C': ('green', '-')}
 DEFAULT_PHASE_LINEWIDTH = 2
 
 # Coalesce rapid control changes (spinbox auto-repeat, drags) into one redraw.
 PLOT_DEBOUNCE_MS = 40
+
+
+class SlotArcSpinBox(QDoubleSpinBox):
+    """Keep fractional slot pitches precise without trailing display zeroes."""
+
+    def textFromValue(self, value):
+        return self.locale().toString(value, 'f', self.decimals()).rstrip('0').rstrip(
+            self.locale().decimalPoint())
 
 
 class ResultantAnimationWindow(QDialog):
@@ -82,12 +90,12 @@ class ResultantAnimationWindow(QDialog):
 
         self.wt_label = QLabel(f"Current Wt: {self.current_wt:.1f}°")
         self.wt_label.setStyleSheet(
-            "font-size: 14px; font-weight: bold; color: #ffffff;")
+            f"font-size: 14px; font-weight: bold; color: {TEXT};")
         controls_layout.addWidget(self.wt_label)
         controls_layout.addStretch()
 
         speed_group = QGroupBox("Animation Speed")
-        speed_group.setStyleSheet("QGroupBox { color: #ffffff; }")
+        speed_group.setStyleSheet(f"QGroupBox {{ color: {TEXT}; }}")
         speed_layout = QHBoxLayout(speed_group)
         speed_layout.setSpacing(5)
 
@@ -198,14 +206,24 @@ class ConnectionMatrixTab(QWidget):
 
     def _init_ui(self):
         layout = QVBoxLayout(self)
-        layout.addWidget(self.canvas, 1)
+        layout.setContentsMargins(20, 18, 20, 18)
+        layout.setSpacing(12)
+        plot_card = QFrame()
+        plot_card.setObjectName('mmfPlotCard')
+        plot_card.setStyleSheet(
+            'QFrame#mmfPlotCard { background: white; border: 1px solid #dedede; border-radius: 8px; }')
+        plot_layout = QVBoxLayout(plot_card)
+        plot_layout.setContentsMargins(6, 6, 6, 6)
+        plot_layout.addWidget(self.canvas)
+        layout.addWidget(plot_card, 1)
         layout.addWidget(self._build_control_panel())
 
     def _build_control_panel(self):
         """Two horizontal control rows below the full-width MMF plot."""
         control_panel = QWidget()
+        control_panel.setObjectName('studySettings')
         panel_layout = QVBoxLayout(control_panel)
-        panel_layout.setContentsMargins(10, 4, 10, 8)
+        panel_layout.setContentsMargins(0, 0, 0, 0)
         panel_layout.setSpacing(8)
         groups_layout = QHBoxLayout()
         groups_layout.setSpacing(12)
@@ -245,14 +263,14 @@ class ConnectionMatrixTab(QWidget):
         export_tooth_btn.setMinimumHeight(35)
         buttons_layout.addWidget(export_tooth_btn)
 
-        resultant_anim_btn = QPushButton("Resultant(Wt)")
+        resultant_anim_btn = QPushButton("Animate MMF")
         resultant_anim_btn.setToolTip(
             "Animate the resultant MMF as Wt sweeps 0–360°.")
         resultant_anim_btn.clicked.connect(self.show_resultant_animation)
         resultant_anim_btn.setMinimumHeight(35)
         buttons_layout.addWidget(resultant_anim_btn)
 
-        matrix_btn = QPushButton("Matrix")
+        matrix_btn = QPushButton("Connection matrix")
         matrix_btn.setObjectName('primaryButton')
         matrix_btn.setToolTip("Show the phase/slot connection matrix.")
         matrix_btn.clicked.connect(self.show_matrix_window)
@@ -263,30 +281,46 @@ class ConnectionMatrixTab(QWidget):
         return control_panel
 
     def _build_phase_group(self):
-        phase_group = QGroupBox("Phases to Plot")
-        phase_group.setMinimumWidth(250)
-        phase_layout = QHBoxLayout(phase_group)
-        phase_layout.setSpacing(10)
-
+        group = QGroupBox('Visible curves')
+        layout = QVBoxLayout(group)
+        panel = QWidget()
+        self.phase_layout = QGridLayout(panel)
+        self.phase_layout.setContentsMargins(0, 0, 0, 0)
+        self.phase_layout.setSpacing(8)
         self.phase_checkboxes = {}
-        for phase in PHASE_PLOT_STYLES:
-            checkbox = QCheckBox(f"Phase {phase}")
-            checkbox.setChecked(True)
+        self._set_phase_controls(phase_names(3))
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setFixedHeight(65)
+        scroll.setMinimumWidth(180)
+        scroll.setWidget(panel)
+        layout.addWidget(scroll)
+        self.resultant_checkbox = QCheckBox('Resultant')
+        self.resultant_checkbox.stateChanged.connect(self._schedule_plot)
+        layout.addWidget(self.resultant_checkbox)
+        return group
+
+    def _set_phase_controls(self, phases):
+        if tuple(self.phase_checkboxes) == tuple(phases):
+            return
+        previous = {phase: checkbox.isChecked() for phase, checkbox in self.phase_checkboxes.items()}
+        while self.phase_layout.count():
+            item = self.phase_layout.takeAt(0)
+            item.widget().hide()
+            item.widget().deleteLater()
+        self.phase_checkboxes = {}
+        for index, phase in enumerate(phases):
+            checkbox = QCheckBox(f'Phase {phase}')
+            checkbox.setChecked(previous.get(phase, True))
             checkbox.stateChanged.connect(self._schedule_plot)
             self.phase_checkboxes[phase] = checkbox
-            phase_layout.addWidget(checkbox)
-
-        self.resultant_checkbox = QCheckBox("Resultant")
-        self.resultant_checkbox.setChecked(False)
-        self.resultant_checkbox.stateChanged.connect(self._schedule_plot)
-        phase_layout.addWidget(self.resultant_checkbox)
-
-        return phase_group
+            self.phase_layout.addWidget(checkbox, index//2, index%2)
 
     def _build_linewidth_group(self):
-        linewidth_group = QGroupBox("Line Width")
-        linewidth_group.setMinimumWidth(150)
-        linewidth_layout = QHBoxLayout(linewidth_group)
+        linewidth_group = QGroupBox("Line width")
+        linewidth_layout = QVBoxLayout(linewidth_group)
         linewidth_layout.setSpacing(10)
 
         self.phase_linewidth_spin = QSpinBox()
@@ -296,15 +330,14 @@ class ConnectionMatrixTab(QWidget):
         self.phase_linewidth_spin.setStyleSheet(SPIN_BOX_STYLE)
         self.phase_linewidth_spin.valueChanged.connect(self._schedule_plot)
 
-        linewidth_layout.addWidget(QLabel('Phases:'))
+        linewidth_layout.addWidget(QLabel('Phase curves'))
         linewidth_layout.addWidget(self.phase_linewidth_spin)
         return linewidth_group
 
     def _build_parameters_group(self):
-        params_group = QGroupBox("MMF Parameters")
-        params_group.setMinimumWidth(240)
-        params_layout = QHBoxLayout(params_group)
-        params_layout.setSpacing(6)
+        params_group = QGroupBox("Excitation")
+        params_layout = QGridLayout(params_group)
+        params_layout.setSpacing(8)
 
         self.turns_spin = QSpinBox()
         self.turns_spin.setRange(*TURNS_RANGE)
@@ -313,8 +346,8 @@ class ConnectionMatrixTab(QWidget):
         self.turns_spin.setToolTip(
             'Turns parameter multiplying each occupied coil-side current.')
         self.turns_spin.valueChanged.connect(self.update_turns)
-        params_layout.addWidget(QLabel('N:'))
-        params_layout.addWidget(self.turns_spin)
+        params_layout.addWidget(QLabel('Turns · N'), 0, 0)
+        params_layout.addWidget(self.turns_spin, 1, 0)
 
         self.current_spin = QDoubleSpinBox()
         self.current_spin.setRange(*PHASE_CURRENT_RANGE_A)
@@ -325,8 +358,8 @@ class ConnectionMatrixTab(QWidget):
         self.current_spin.setToolTip(
             'Peak current parameter. A double-layer winding uses I/2 in each layer.')
         self.current_spin.valueChanged.connect(self.update_current)
-        params_layout.addWidget(QLabel('I:'))
-        params_layout.addWidget(self.current_spin)
+        params_layout.addWidget(QLabel('Peak current · I'), 0, 1)
+        params_layout.addWidget(self.current_spin, 1, 1)
 
         self.wt_spin = QSpinBox()
         self.wt_spin.setRange(*WT_ANGLE_RANGE_DEG)
@@ -334,30 +367,29 @@ class ConnectionMatrixTab(QWidget):
         self.wt_spin.setSuffix("°")
         self.wt_spin.setStyleSheet(SPIN_BOX_STYLE)
         self.wt_spin.setToolTip(
-            'Electrical angle. Phase factors are sin(Wt), sin(Wt+120), '
-            'sin(Wt-120). Increasing Wt advances the resultant clockwise.')
+            'Electrical angle. Dolomites phase shifts use 360/m degrees for odd '
+            'phase counts and 180/m degrees for even phase counts.')
         self.wt_spin.valueChanged.connect(self.update_wt_angle)
-        params_layout.addWidget(QLabel('Wt:'))
-        params_layout.addWidget(self.wt_spin)
+        params_layout.addWidget(QLabel('Angle · Wt'), 0, 2)
+        params_layout.addWidget(self.wt_spin, 1, 2)
 
         return params_group
 
     def _build_slot_arc_group(self):
-        slot_arc_group = QGroupBox("Slot Arc Angle")
-        slot_arc_group.setMinimumWidth(140)
-        slot_arc_layout = QHBoxLayout(slot_arc_group)
+        slot_arc_group = QGroupBox("Slot opening")
+        slot_arc_layout = QVBoxLayout(slot_arc_group)
         slot_arc_layout.setSpacing(10)
 
-        self.slot_arc_spin = QDoubleSpinBox()
+        self.slot_arc_spin = SlotArcSpinBox()
+        self.slot_arc_spin.setDecimals(8)
         self.slot_arc_spin.setMinimum(0.5)
         self.slot_arc_spin.setSingleStep(0.5)
         self.slot_arc_spin.setValue(default_slot_arc_deg(DEFAULT_NUM_SLOTS))
         self.slot_arc_spin.setSuffix("°")
-        self.slot_arc_spin.setDecimals(2)
         self.slot_arc_spin.setStyleSheet(DOUBLE_SPIN_BOX_STYLE)
         self.slot_arc_spin.valueChanged.connect(self.update_slot_arc)
 
-        slot_arc_layout.addWidget(QLabel('Angle:'))
+        slot_arc_layout.addWidget(QLabel('Arc angle'))
         slot_arc_layout.addWidget(self.slot_arc_spin)
         return slot_arc_group
 
@@ -379,11 +411,12 @@ class ConnectionMatrixTab(QWidget):
         self.mmf_calculator.update_wt_angle(self.wt_spin.value())
         self._schedule_plot()
 
-    def update_matrix(self, winding_pattern, is_double_layer, poles, coil_span=None):
+    def update_matrix(self, winding_pattern, is_double_layer, poles, coil_span=None, phase_count=3):
         """Rebuild the connection matrix from main-tab winding parameters."""
+        self._set_phase_controls(phase_names(phase_count))
         try:
             self.matrix = self.mmf_calculator.update_matrix_from_parameters(
-                winding_pattern, is_double_layer, poles, coil_span=coil_span)
+                winding_pattern, is_double_layer, poles, coil_span=coil_span, phase_count=phase_count)
         except ValueError as error:
             self.invalidate_winding(str(error))
             return
@@ -437,12 +470,12 @@ class ConnectionMatrixTab(QWidget):
         self.ax.set_xlim(0, 360)
 
         if self.ax.get_lines():
-            self.ax.legend()
+            self.ax.legend(ncol=max(1, (len(self.ax.get_lines())+7)//8), fontsize=9)
 
         self.canvas.draw()
 
     def _is_double_layer(self):
-        return self.matrix is not None and self.matrix.shape[0] == DOUBLE_LAYER_ROWS
+        return self.matrix is not None and self.mmf_calculator.is_double_layer
 
     def _plot_selected_phases(self, selected_phases):
         linewidth = self.phase_linewidth_spin.value()
@@ -454,7 +487,7 @@ class ConnectionMatrixTab(QWidget):
             angles, values = self.mmf_calculator.get_profile_data(
                 phase, layer_type, wt_deg=wt if instantaneous else None)
             if angles is not None:
-                color, linestyle = PHASE_PLOT_STYLES[phase]
+                color, linestyle = phase_color(phase), '-'
                 label = f'Phase {phase}' if instantaneous else f'Phase {phase} (peak)'
                 self.ax.plot(angles, values, label=label,
                              color=color, linestyle=linestyle, linewidth=linewidth)
@@ -483,10 +516,9 @@ class ConnectionMatrixTab(QWidget):
         table = QTableWidget()
         rows, cols = self.matrix.shape
 
-        if rows == DOUBLE_LAYER_ROWS:
-            row_labels = ["A_top", "B_top", "C_top", "A_bot", "B_bot", "C_bot"]
-        else:
-            row_labels = ["A", "B", "C"]
+        phases = self.mmf_calculator.phases
+        row_labels = ([f'{phase}_top' for phase in phases] + [f'{phase}_bot' for phase in phases]
+                      if self._is_double_layer() else list(phases))
 
         table.setRowCount(rows)
         table.setColumnCount(cols)
@@ -496,26 +528,26 @@ class ConnectionMatrixTab(QWidget):
         table.setShowGrid(True)
         table.setWordWrap(False)
         table.horizontalHeader().setStretchLastSection(True)
-        table.horizontalHeader().setDefaultAlignment(Qt.AlignCenter)
-        table.verticalHeader().setDefaultAlignment(Qt.AlignCenter)
-        table.setEditTriggers(QTableWidget.NoEditTriggers)
-        table.setSelectionBehavior(QTableWidget.SelectItems)
-        table.setSelectionMode(QTableWidget.SingleSelection)
+        table.horizontalHeader().setDefaultAlignment(Qt.AlignmentFlag.AlignCenter)
+        table.verticalHeader().setDefaultAlignment(Qt.AlignmentFlag.AlignCenter)
+        table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectItems)
+        table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
 
         header_font = table.horizontalHeader().font()
         header_font.setPointSize(12)
         table.horizontalHeader().setFont(header_font)
-        table.horizontalHeader().setDefaultAlignment(Qt.AlignLeft)
+        table.horizontalHeader().setDefaultAlignment(Qt.AlignmentFlag.AlignLeft)
 
         table.horizontalHeader().setFixedHeight(50)
         table.verticalHeader().setFixedWidth(70)
         table.verticalHeader().setDefaultSectionSize(43)
-        table.verticalHeader().setDefaultAlignment(Qt.AlignLeft | Qt.AlignTop)
+        table.verticalHeader().setDefaultAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         table.verticalHeader().setStretchLastSection(False)
 
-        table.setFrameStyle(QFrame.NoFrame)
-        table.horizontalHeader().setSectionResizeMode(QHeaderView.Fixed)
-        table.verticalHeader().setSectionResizeMode(QHeaderView.Fixed)
+        table.setFrameShape(QFrame.Shape.NoFrame)
+        table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
+        table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
 
         for row in range(rows):
             for col in range(cols):
@@ -527,8 +559,8 @@ class ConnectionMatrixTab(QWidget):
 
         layout.addWidget(table)
         layout.addWidget(save_btn)
-        dialog.resize(1920, 450 if rows == DOUBLE_LAYER_ROWS else 350)
-        dialog.exec_()
+        dialog.resize(1920, min(800, 150+rows*43))
+        dialog.exec()
 
     def _save_matrix_to_excel(self, matrix):
         filename, _ = QFileDialog.getSaveFileName(
@@ -565,7 +597,7 @@ class ConnectionMatrixTab(QWidget):
 
         self.update_plot()
 
-    def _pair_poles_value(self):
+    def _poles_value(self):
         poles_spin = getattr(self.main_window, 'poles_spin', None)
         return poles_spin.value() if poles_spin else 0
 
@@ -585,7 +617,7 @@ class ConnectionMatrixTab(QWidget):
                          else "single_layer")
             view_str = (f'instantaneous_Wt{self.wt_spin.value()}'
                         if self.phase_view_combo.currentIndex() == 0 else 'peak_reference')
-            filename = (f"{n_slots}slots_{self._pair_poles_value()}pairpoles_"
+            filename = (f"{n_slots}slots_{self._poles_value()}poles_"
                         f"{phases_str}_{layer_str}_{view_str}.png")
 
             save_path, _ = QFileDialog.getSaveFileName(
@@ -612,7 +644,7 @@ class ConnectionMatrixTab(QWidget):
 
             n_slots = self.matrix.shape[1] if self.matrix is not None else 0
             layer_str = "double_layer" if self._is_double_layer() else "single_layer"
-            filename = (f"{n_slots}slots_{self._pair_poles_value()}pairpoles_"
+            filename = (f"{self.mmf_calculator.phase_count}phases_{n_slots}slots_{self._poles_value()}poles_"
                         f"resultant_tooth_mmf_Wt{wt_deg}deg_{layer_str}.xlsx")
 
             save_path, _ = QFileDialog.getSaveFileName(
@@ -636,15 +668,16 @@ def setup_connection_matrix_tab(main_window):
     """Create the MMF tab and keep it in sync with the winding tab."""
     main_window.connection_tab = ConnectionMatrixTab(main_window)
     layout = QVBoxLayout()
+    layout.setContentsMargins(0, 0, 0, 0)
     layout.addWidget(main_window.connection_tab)
     main_window.tab_connection.setLayout(layout)
 
     def sync_with_winding_tab():
-        actual_poles = main_window.poles_spin.value() * 2
+        actual_poles = main_window.poles_spin.value()
         main_window.connection_tab.update_matrix(
             main_window.stator_drawing.winding_pattern,
             main_window.stator_drawing.is_double_layer,
-            actual_poles, coil_span=main_window.span_spin.value())
+            actual_poles, coil_span=main_window.span_spin.value(), phase_count=main_window.phases_spin.value())
 
     sync_with_winding_tab()
 

@@ -8,7 +8,7 @@ import math
 import sys
 
 import femm
-from PyQt5.QtWidgets import (QApplication, QGridLayout, QGroupBox, QLabel,
+from PyQt6.QtWidgets import (QApplication, QGridLayout, QGroupBox, QLabel,
                              QLineEdit, QMainWindow, QMessageBox, QPushButton,
                              QVBoxLayout, QWidget)
 
@@ -195,4 +195,4 @@ if __name__ == '__main__':
     app = QApplication(sys.argv)
     gui = MotorDesignGUI()
     gui.show()
-    sys.exit(app.exec_())
+    sys.exit(app.exec())

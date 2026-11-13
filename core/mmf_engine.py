@@ -1,8 +1,8 @@
 """MMF profile calculation engine.
 
 Computes tooth-based MMF profiles per phase from a connection matrix and
-combines them into the rotating resultant
-``A·sin(Wt) + B·sin(Wt+120°) + C·sin(Wt-120°)``.
+combines them into the resultant with the selected Dolomites phase offsets:
+360/m degrees for odd phase counts and 180/m degrees for even phase counts.
 
 Profiles are stored as ``(angles, values)`` NumPy array pairs instead of the
 previous lists of (angle, value) tuples, which keeps the per-frame resultant
@@ -12,12 +12,12 @@ computation of the animation vectorised.
 import numpy as np
 
 from core.connection_matrix import generate_connection_matrix
+from utils.phases import matrix_layout, phase_names, phase_sin_factors
 from utils.constants import (
     DEFAULT_PHASE_CURRENT_A,
     DEFAULT_TURNS,
     DEFAULT_WT_ANGLE_DEG,
     MMF_PROFILE_RESOLUTION,
-    PHASES,
     default_slot_arc_deg,
 )
 
@@ -30,6 +30,9 @@ class MMFCalculationEngine:
 
     def __init__(self):
         self.matrix = None
+        self.phase_count = 3
+        self.phases = phase_names(3)
+        self.is_double_layer = False
         self.n_slots = 0
         self.slot_arc_deg = 5.0
         self.tooth_arc_deg = 0.0
@@ -47,25 +50,21 @@ class MMFCalculationEngine:
     # ------------------------------------------------------------------ API
 
     def update_matrix_from_parameters(self, winding_pattern, is_double_layer,
-                                      poles, coil_span=None):
+                                      poles, coil_span=None, phase_count=3):
         """Rebuild the connection matrix from winding parameters."""
         matrix = generate_connection_matrix(
-            winding_pattern, list(PHASES), is_double_layer, poles,
+            winding_pattern, phase_names(phase_count), is_double_layer, poles,
             coil_span=coil_span)
-        self.set_connection_matrix(matrix)
+        self.set_connection_matrix(matrix, phase_count, is_double_layer)
         return self.matrix
 
-    def set_connection_matrix(self, matrix):
+    def set_connection_matrix(self, matrix, phase_count=None, is_double_layer=None):
         """Set the connection matrix and recompute all MMF profiles."""
         matrix = np.asarray(matrix, dtype=float)
         if matrix.ndim != 2 or matrix.shape[1] == 0:
             raise ValueError('Connection matrix must contain phase rows and slots.')
-        rows = matrix.shape[0]
-        if rows not in (SINGLE_LAYER_ROWS, DOUBLE_LAYER_ROWS):
-            raise ValueError(
-                f"Connection matrix must have {SINGLE_LAYER_ROWS} or "
-                f"{DOUBLE_LAYER_ROWS} rows, got {rows}")
-        combined = matrix[:3] + matrix[3:] if rows == DOUBLE_LAYER_ROWS else matrix
+        phase_count, is_double_layer = matrix_layout(matrix, phase_count, is_double_layer)
+        combined = matrix[:phase_count] + matrix[phase_count:] if is_double_layer else matrix
         if not np.isfinite(matrix).all() or not np.allclose(combined.sum(axis=1), 0):
             raise ValueError('Each complete winding phase must have balanced slot ampere-turns.')
 
@@ -73,6 +72,9 @@ class MMFCalculationEngine:
         if not 0 < self.slot_arc_deg < pitch:
             self.slot_arc_deg = default_slot_arc_deg(matrix.shape[1])
         self.matrix = matrix.copy()
+        self.phase_count = phase_count
+        self.phases = phase_names(phase_count)
+        self.is_double_layer = is_double_layer
         self.n_slots = matrix.shape[1]
         self.slot_pitch_deg = 360 / self.n_slots
         self.tooth_arc_deg = self.slot_pitch_deg - self.slot_arc_deg
@@ -81,7 +83,7 @@ class MMFCalculationEngine:
         self._tooth_mmf_base = None
         self.profiles = {}
 
-        if rows == DOUBLE_LAYER_ROWS:
+        if self.is_double_layer:
             self._calculate_double_layer_profiles(matrix)
         else:
             self._calculate_single_layer_profiles(matrix)
@@ -109,8 +111,8 @@ class MMFCalculationEngine:
         profile = self.profiles.get(key)
         if profile is None:
             return None, None
-        if wt_deg is not None and phase_name in PHASES:
-            factor = _three_phase_sin_factors(wt_deg)[PHASES.index(phase_name)]
+        if wt_deg is not None and phase_name in self.phases:
+            factor = phase_sin_factors(wt_deg, self.phase_count)[self.phases.index(phase_name)]
             return profile[0], profile[1] * factor
         return profile
 
@@ -120,15 +122,13 @@ class MMFCalculationEngine:
         Used by the animation so sweeping Wt never corrupts the configured
         angle (the previous implementation overwrote it permanently).
         """
-        try:
-            angles, values_a = self.profiles['A']
-            _, values_b = self.profiles['B']
-            _, values_c = self.profiles['C']
-        except KeyError:
+        if any(phase not in self.profiles for phase in self.phases):
             return None
-
-        sin_a, sin_b, sin_c = _three_phase_sin_factors(wt_deg)
-        return angles, values_a * sin_a + values_b * sin_b + values_c * sin_c
+        angles = self.profiles[self.phases[0]][0]
+        factors = phase_sin_factors(wt_deg, self.phase_count)
+        values = sum(self.profiles[phase][1] * factor
+                     for phase, factor in zip(self.phases, factors))
+        return angles, values
 
     def get_tooth_mmf_data(self, wt_deg=None):
         """Resultant MMF per tooth, used by the teeth/slot MMF calculator.
@@ -142,7 +142,7 @@ class MMFCalculationEngine:
         # The per-phase tooth MMF is Wt-independent (only the sin combination
         # below depends on Wt), so cache it. This turns each animation frame's
         # tooth-MMF step into a couple of vectorised multiply-adds instead of
-        # re-running the O(n_slots²) group-finding for all three phases.
+        # re-running the O(n_slots²) group-finding for every phase.
         tooth_mmf = self._tooth_mmf_base
         if tooth_mmf is None:
             phase_mmf = self._phase_mmf_per_slot(self.matrix)
@@ -154,10 +154,9 @@ class MMFCalculationEngine:
 
         if wt_deg is None:
             wt_deg = self.wt_angle_deg
-        sin_a, sin_b, sin_c = _three_phase_sin_factors(wt_deg)
-        resultant = (tooth_mmf['A'] * sin_a
-                     + tooth_mmf['B'] * sin_b
-                     + tooth_mmf['C'] * sin_c)
+        factors = phase_sin_factors(wt_deg, self.phase_count)
+        resultant = sum(tooth_mmf[phase] * factor
+                        for phase, factor in zip(self.phases, factors))
 
         return {'Resultant': {'tooth_mmf': resultant.tolist()}}
 
@@ -199,23 +198,22 @@ class MMFCalculationEngine:
 
     def _recalculate(self):
         if self.matrix is not None:
-            self.set_connection_matrix(self.matrix)
+            self.set_connection_matrix(self.matrix, self.phase_count, self.is_double_layer)
 
     # ----------------------------------------------------- profile assembly
 
     def _calculate_single_layer_profiles(self, matrix):
-        phase_a, phase_b, phase_c = matrix
         amp = self.phase_current_a * self.turns / 2
 
         tooth_values = [self._tooth_mmf_from_phase(row * amp)
-                        for row in (phase_a, phase_b, phase_c)]
+                        for row in matrix]
         angles, value_arrays = self._build_continuous_profiles(tooth_values)
 
-        for phase, values in zip(PHASES, value_arrays):
+        for phase, values in zip(self.phases, value_arrays):
             self.profiles[phase] = (angles, values)
 
     def _calculate_double_layer_profiles(self, matrix):
-        top_rows, bottom_rows = _split_double_layer_rows(matrix)
+        top_rows, bottom_rows = _split_double_layer_rows(matrix, self.phase_count)
 
         # Phase current is shared equally between the two layers.
         amp = (self.phase_current_a / 2) * self.turns / 2
@@ -231,7 +229,7 @@ class MMFCalculationEngine:
         angles, top_values = self._build_continuous_profiles(top_tooth)
         _, bottom_values = self._build_continuous_profiles(bottom_tooth)
 
-        for phase, top, bottom in zip(PHASES, top_values, bottom_values):
+        for phase, top, bottom in zip(self.phases, top_values, bottom_values):
             self.profiles[f'{phase}_top'] = (angles, top)
             self.profiles[f'{phase}_bot'] = (angles, bottom)
             summed = top + bottom
@@ -241,20 +239,10 @@ class MMFCalculationEngine:
 
     def _phase_mmf_per_slot(self, matrix):
         """Raw per-slot MMF for each phase (before the tooth-based logic)."""
-        rows = matrix.shape[0]
         amp = self.phase_current_a * self.turns / 2
-
-        if rows == SINGLE_LAYER_ROWS:
-            phase_a, phase_b, phase_c = matrix
-            scale = amp
-        elif rows == DOUBLE_LAYER_ROWS:
-            top_a, top_b, top_c, bot_a, bot_b, bot_c = matrix
-            phase_a, phase_b, phase_c = top_a + bot_a, top_b + bot_b, top_c + bot_c
-            scale = amp / 2  # current split between layers
-        else:
-            return None
-
-        return {'A': phase_a * scale, 'B': phase_b * scale, 'C': phase_c * scale}
+        complete = matrix[:self.phase_count] + matrix[self.phase_count:] if self.is_double_layer else matrix
+        scale = amp / 2 if self.is_double_layer else amp
+        return {phase: row * scale for phase, row in zip(self.phases, complete)}
 
     # ----------------------------------------------------- tooth-based logic
 
@@ -305,9 +293,9 @@ class MMFCalculationEngine:
         return angles, profiles
 
 
-def _split_double_layer_rows(matrix):
+def _split_double_layer_rows(matrix, phase_count=3):
     """Preserve the actual phase/sign of each physical winding layer."""
-    return np.asarray(matrix[:3]), np.asarray(matrix[3:])
+    return np.asarray(matrix[:phase_count]), np.asarray(matrix[phase_count:])
 
 
 def _three_phase_sin_factors(wt_deg):

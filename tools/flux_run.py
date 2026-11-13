@@ -10,7 +10,7 @@ import sys
 
 import femm
 import pandas as pd
-from PyQt5.QtWidgets import (QApplication, QComboBox, QFileDialog, QGridLayout,
+from PyQt6.QtWidgets import (QApplication, QComboBox, QFileDialog, QGridLayout,
                              QGroupBox, QLabel, QLineEdit, QMainWindow,
                              QMessageBox, QPushButton, QVBoxLayout, QWidget)
 
@@ -336,4 +336,4 @@ if __name__ == '__main__':
     app = QApplication(sys.argv)
     gui = MotorDesignGUI()
     gui.show()
-    sys.exit(app.exec_())
+    sys.exit(app.exec())

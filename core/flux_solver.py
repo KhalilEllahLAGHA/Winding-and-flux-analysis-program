@@ -13,7 +13,7 @@ import time
 
 import numpy as np
 from scipy.sparse import coo_matrix
-from scipy.sparse.linalg import LinearOperator, cg
+from scipy.sparse.linalg import LinearOperator, cg, splu
 
 from utils.constants import DEFAULT_AXIAL_LENGTH_MM
 
@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_SOLVER_TOLERANCE = 1e-6
 SOLVER_METHOD_NAME = 'pcg_jacobi'
 NEGLIGIBLE_FLUX_WB = 1e-12
+DIRECT_SOLVER_MAX_ELEMENTS = 100000
 
 DIRECTIONS = ('left', 'right', 'up', 'down')
 OPPOSITE_DIRECTION = {'left': 'right', 'right': 'left', 'up': 'down', 'down': 'up'}
@@ -59,6 +60,8 @@ class FluxCalculator:
         self._cached_matrix = None
         self._cached_reduced_matrix = None
         self._cached_preconditioner = None
+        self._cached_lu = None
+        self._cached_lu_matrix = None
         self._cached_id_to_idx = None
         self._cached_neighbors = None
         self._cached_eids = None
@@ -109,7 +112,8 @@ class FluxCalculator:
         if progress_callback:
             progress_callback("Solving with Preconditioned CG (Jacobi)...")
 
-        self.potentials, info = self._solve_linear_system(matrix, rhs, tolerance)
+        method = (solver_options or {}).get('method', SOLVER_METHOD_NAME)
+        self.potentials, info = self._solve_linear_system(matrix, rhs, tolerance, method)
 
         if progress_callback:
             progress_callback("Computing branch fluxes...")
@@ -148,7 +152,7 @@ class FluxCalculator:
             'branch_fluxes': self.branch_fluxes,
             'flux_densities': self.flux_densities,
             'solver_info': {
-                'method': SOLVER_METHOD_NAME,
+                'method': self._solver_method,
                 'tolerance': tolerance,
                 'info': int(info),
                 'reference_element_id': self.reluctance_data[0]['element_id'],
@@ -254,31 +258,22 @@ class FluxCalculator:
         n = len(self.reluctance_data)
         id_to_idx = {data['element_id']: idx
                      for idx, data in enumerate(self.reluctance_data)}
-        reluctance_lookup = {data['element_id']: data['reluctances']
-                             for data in self.reluctance_data}
-
-        nbr_idx = {d: np.full(n, -1, dtype=np.int64) for d in DIRECTIONS}
-        inv_R = {d: np.zeros(n, dtype=np.float64) for d in DIRECTIONS}
-
-        for elem_data in self.reluctance_data:
-            eid = elem_data['element_id']
-            i = id_to_idx[eid]
-            rel_i = reluctance_lookup[eid]
-            neigh_i = self.neighbors.get(eid, {})
-
-            for direction in DIRECTIONS:
-                neighbor_id = neigh_i.get(direction)
-                if neighbor_id is None or neighbor_id not in id_to_idx:
-                    continue
-
-                opposite = OPPOSITE_DIRECTION[direction]
-                total_reluctance = (rel_i['R_' + direction]
-                                    + reluctance_lookup[neighbor_id]['R_' + opposite])
-                if not np.isfinite(total_reluctance) or total_reluctance <= 0:
-                    raise ValueError('Branch reluctances must be finite and positive.')
-
-                nbr_idx[direction][i] = id_to_idx[neighbor_id]
-                inv_R[direction][i] = 1.0 / total_reluctance
+        reluctances = np.asarray([
+            [data['reluctances']['R_'+d] for d in DIRECTIONS]
+            for data in self.reluctance_data], dtype=np.float64).reshape(n, 4)
+        nbr_idx, inv_R = {}, {}
+        for column, direction in enumerate(DIRECTIONS):
+            indices = np.fromiter(
+                (id_to_idx.get(self.neighbors[data['element_id']].get(direction), -1)
+                 for data in self.reluctance_data), dtype=np.int64, count=n)
+            nbr_idx[direction] = indices
+            valid = indices >= 0
+            opposite_column = DIRECTIONS.index(OPPOSITE_DIRECTION[direction])
+            total = reluctances[valid, column] + reluctances[indices[valid], opposite_column]
+            if not np.isfinite(total).all() or np.any(total <= 0):
+                raise ValueError('Branch reluctances must be finite and positive.')
+            inv_R[direction] = np.zeros(n, dtype=np.float64)
+            inv_R[direction][valid] = 1 / total
 
         # Assemble the sparse system in one COO build from the per-direction
         # arrays, instead of tens of thousands of slow lil_matrix insertions.
@@ -299,6 +294,8 @@ class FluxCalculator:
             shape=(n, n), dtype=np.float64).tocsr()
         self._cached_reduced_matrix = None
         self._cached_preconditioner = None
+        self._cached_lu = None
+        self._cached_lu_matrix = None
         self._cached_id_to_idx = id_to_idx
         self._cached_eids = [data['element_id'] for data in self.reluctance_data]
         self._cached_nbr_idx = nbr_idx
@@ -313,23 +310,13 @@ class FluxCalculator:
 
     def _build_geometry_arrays(self):
         """Cache element rin/rout/r_center (in metres) for flux densities."""
-        n = len(self.reluctance_data)
-        rin = np.empty(n, dtype=np.float64)
-        rout = np.empty(n, dtype=np.float64)
-        r_center = np.empty(n, dtype=np.float64)
-        theta_span = np.empty(n, dtype=np.float64)
-        for idx, data in enumerate(self.reluctance_data):
-            geometry = data['geometry']
-            rin[idx] = geometry['rin']
-            rout[idx] = geometry['rout']
-            r_center[idx] = data['center']['r']
-            theta_span[idx] = np.radians(
-                geometry['theta_end'] - geometry['theta_start'])
-        return {'rin_m': rin / 1000.0,
-                'rout_m': rout / 1000.0,
-                'r_center_m': r_center / 1000.0,
-                'theta_span_rad': theta_span,
-                'log_ratio': np.log(rout / rin)}
+        geometry = np.asarray([
+            (data['geometry']['rin'], data['geometry']['rout'], data['center']['r'],
+             data['geometry']['theta_end']-data['geometry']['theta_start'])
+            for data in self.reluctance_data], dtype=np.float64).reshape(-1, 4)
+        rin, rout, center, span = geometry.T
+        return {'rin_m': rin/1000, 'rout_m': rout/1000, 'r_center_m': center/1000,
+                'theta_span_rad': np.radians(span), 'log_ratio': np.log(rout/rin)}
 
     def _mmf_arrays(self):
         """Per-element MMF source arrays (up/down/left/right), aligned to the
@@ -404,7 +391,7 @@ class FluxCalculator:
                               matvec=lambda x: inv_diag * x,
                               dtype=np.float64)
 
-    def _solve_linear_system(self, matrix, rhs, tolerance):
+    def _solve_linear_system(self, matrix, rhs, tolerance, method=SOLVER_METHOD_NAME):
         """Fix one potential reference without adding an artificial flux path.
 
         Missing boundary branches impose zero normal flux. The remaining
@@ -421,6 +408,16 @@ class FluxCalculator:
         source_scale = float(np.abs(rhs).sum())
         if abs(self._solver_source_balance) > max(source_scale, 1e-300) * 1e-10:
             raise ValueError('The closed magnetic network has unbalanced sources.')
+        self._solver_method = SOLVER_METHOD_NAME
+        if (method in ('auto', 'sparse_lu') and 1 < n <= DIRECT_SOLVER_MAX_ELEMENTS
+                and np.any(rhs)):
+            try:
+                return self._solve_sparse_direct(matrix, rhs, tolerance)
+            except (RuntimeError, ValueError, MemoryError) as error:
+                # Factorisation is optional; CG retains its original strict
+                # full-network residual test and bounded warm refinement.
+                self._cached_lu = self._cached_lu_matrix = None
+                logger.warning('Sparse factorisation unavailable; using PCG: %s', error)
         potentials = np.zeros(n, dtype=np.float64)
         info = 0
         self._solver_refinement_steps = 0
@@ -472,6 +469,31 @@ class FluxCalculator:
 
         raise RuntimeError(f'Magnetic solver did not converge (info={info}, '
                            f'relative residual={self._solver_relative_residual:.3e}).')
+
+    def _solve_sparse_direct(self, matrix, rhs, tolerance):
+        """Cache the reduced sparse LU while geometry/materials stay fixed."""
+        if self._cached_lu is None or self._cached_lu_matrix is not matrix:
+            # Minimum-degree ordering preserves sparsity in this symmetric
+            # network, without disabling SuperLU's numerical pivoting.
+            self._cached_lu = splu(matrix[1:, 1:].tocsc(), permc_spec='MMD_AT_PLUS_A')
+            self._cached_lu_matrix = matrix
+        potentials = np.zeros(len(rhs), dtype=np.float64)
+        potentials[1:] = self._cached_lu.solve(rhs[1:])
+        rhs_norm = float(np.linalg.norm(rhs))
+        self._solver_refinement_steps = 0
+        for attempt in range(3):
+            residual = matrix @ potentials - rhs
+            self._solver_residual_norm = float(np.linalg.norm(residual))
+            self._solver_relative_residual = (self._solver_residual_norm/rhs_norm
+                                              if rhs_norm else self._solver_residual_norm)
+            if (np.isfinite(potentials).all() and np.isfinite(self._solver_relative_residual)
+                    and self._solver_relative_residual <= max(10*tolerance, 1e-12)):
+                self._solver_method = 'sparse_lu'
+                return potentials, 0
+            if attempt < 2:
+                potentials[1:] -= self._cached_lu.solve(residual[1:])
+                self._solver_refinement_steps += 1
+        raise RuntimeError('Sparse solve failed the full-network residual check.')
 
     # ------------------------------------------------------------- results
 

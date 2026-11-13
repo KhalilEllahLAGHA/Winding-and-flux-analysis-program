@@ -11,21 +11,30 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from core.femm_runner import parse_validation_results, run_femm_script
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--script', type=Path, required=True)
     parser.add_argument('--results', type=Path, required=True)
     parser.add_argument('--timeout', type=float, default=300)
     parser.add_argument('--keep-open', action='store_true',
                         help='Keep the solved FEMM field open for inspection.')
-    args = parser.parse_args()
+    parser.add_argument('--response', type=Path,
+                        help='JSON response file for a windowed standalone worker.')
+    args = parser.parse_args(argv)
     try:
         backend = run_femm_script(args.script, args.results, args.timeout,
                                   keep_open=args.keep_open)
-        print(json.dumps({'backend': backend,
-                          'metrics': parse_validation_results(args.results)}))
+        payload = {'backend': backend,
+                   'metrics': parse_validation_results(args.results)}
+        if args.response:
+            args.response.write_text(json.dumps(payload), encoding='utf-8')
+        if sys.stdout is not None:
+            print(json.dumps(payload))
     except Exception as error:
-        print(str(error), file=sys.stderr)
+        if args.response:
+            args.response.write_text(json.dumps({'error': str(error)}), encoding='utf-8')
+        if sys.stderr is not None:
+            print(str(error), file=sys.stderr)
         return 1
     return 0
 

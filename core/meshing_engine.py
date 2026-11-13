@@ -51,6 +51,11 @@ class MeshingEngine:
 
         mesh_angle = self.calculate_mesh_angle(machine_params, mesh_settings)
         self.r_divisions = self.create_radial_divisions(machine_params, mesh_settings)
+        element_count = round(360 / mesh_angle) * (len(self.r_divisions) - 1)
+        if element_count > 1_000_000:
+            raise ValueError('This slot angle requires more than 1,000,000 mesh cells. '
+                             'Use half the slot pitch or a simpler slot/tooth ratio, '
+                             'or reduce the mesh resolution.')
         self.theta_divisions = self.create_angular_divisions(mesh_angle)
 
         material_boundaries = {
@@ -100,7 +105,15 @@ class MeshingEngine:
         if tooth_arc <= 0:
             raise ValueError("Slot angle too large - no space for teeth")
 
-        self.base_mesh_angle = self.calculate_gcd_fractional(slot_arc, tooth_arc)
+        # A rounded fractional half-pitch (e.g. 180/52 degrees) must not turn
+        # a two-cell-per-pitch mesh into hundreds of thousands of divisions.
+        # The tolerance is below the eight-decimal slot-angle input precision.
+        if abs(slot_arc - tooth_arc) <= 1.01e-8:
+            self.base_mesh_angle = slot_pitch / 2
+        else:
+            self.base_mesh_angle = self.calculate_gcd_fractional(slot_arc, tooth_arc)
+        if self.base_mesh_angle <= 0:
+            raise ValueError('Slot/tooth angles are too small for this mesh precision.')
 
         final_mesh_angle = self.base_mesh_angle / angle_divider
         divisions = round(360 / final_mesh_angle)
@@ -141,7 +154,7 @@ class MeshingEngine:
 
     def create_angular_divisions(self, mesh_angle):
         """Angular division boundaries covering exactly 0-360°."""
-        num_divisions = int(np.ceil(360 / mesh_angle))
+        num_divisions = max(1, int(round(360 / mesh_angle)))
         theta_divisions = np.linspace(0, 360, num_divisions + 1).tolist()
         theta_divisions[-1] = 360.0
         return theta_divisions
@@ -207,8 +220,8 @@ def _validate_geometry(machine_params):
     if machine_params['shaft_radius'] >= rotor_outer:
         raise ValueError("Shaft radius too large for given air gap")
 
-    if machine_params['num_slots'] < 3:
-        raise ValueError("Number of slots must be at least 3")
+    if machine_params['num_slots'] < 2:
+        raise ValueError("Number of slots must be at least 2")
 
     slot_pitch = 360 / machine_params['num_slots']
     if slot_pitch - machine_params['slot_angle'] <= 0:

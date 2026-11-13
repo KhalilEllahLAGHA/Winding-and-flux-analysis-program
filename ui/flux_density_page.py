@@ -6,18 +6,19 @@ against a FEMM validation run.
 """
 
 import csv
+from copy import deepcopy
+import time
 import json
 import logging
-import sys
 from datetime import datetime
 from uuid import uuid4
 
 import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
-from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
-from PyQt5.QtCore import QProcess, QRectF, QSize, QTimer, Qt
-from PyQt5.QtWidgets import (QApplication, QCheckBox, QComboBox, QFileDialog,
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as NavigationToolbar
+from PyQt6.QtCore import QProcess, QSize, QTimer, Qt
+from PyQt6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFileDialog,
                              QFormLayout, QGroupBox, QHBoxLayout, QLabel,
                              QLineEdit, QMessageBox, QProgressBar, QPushButton,
                              QScrollArea, QSizePolicy, QSpinBox, QStackedWidget, QTabWidget, QVBoxLayout,
@@ -32,17 +33,16 @@ from core.reluctance_calculator import ReluctanceCalculator
 from core.teeth_slot_mmf import TeethSlotMMFCalculator
 from ui.flux_visualization import (DEFAULT_CONTOUR_COUNT, generate_flux_density_heatmap,
                                    generate_flux_line_density_visualisation,
-                                   generate_flux_lines_visualisation,
-                                   setup_heatmap_animation)
+                                   generate_flux_lines_visualisation)
 from ui.theme import (FLUX_DENSITY_PAGE_STYLE, PAGE_SUBTITLE_STYLE,
                       PAGE_TITLE_STYLE, set_status)
 from utils.constants import (DEFAULT_AXIAL_LENGTH_MM,
-                             DEFAULT_RELATIVE_PERMEABILITIES,
-                             DEFAULT_WT_ANGLE_DEG)
-from utils.paths import FEMM_VALIDATION_DIR, PROJECT_ROOT
+                             DEFAULT_RELATIVE_PERMEABILITIES)
+from utils.paths import FEMM_VALIDATION_DIR, PROJECT_ROOT, femm_worker_command
 
 try:
     import pyqtgraph as pg
+    from ui.field_animation import AnimationPreparation, FieldAnimationView
     pg.setConfigOptions(imageAxisOrder='row-major')
     PYQTGRAPH_AVAILABLE = True
 except Exception:
@@ -51,15 +51,13 @@ except Exception:
 
 logger = logging.getLogger(__name__)
 
-SOLVER_OPTIONS = {'method': 'pcg_jacobi', 'tolerance': 1e-6}
-SOLVER_LABEL = "PCG (Jacobi)"
+SOLVER_OPTIONS = {'method': 'auto', 'tolerance': 1e-6}
+SOLVER_LABEL = "Automatic"
 EXCITED_EPSILON = 1e-12
 
 VISUALISATION_MODES = ("B Heatmap", "Flux Lines", "Flux Line + Density")
 ANALYSIS_REGIONS = ("Air Gap", "Rotor Core", "Tooth", "Stator Core", "Slot")
 
-ANIMATION_FRAME_DPI = 220
-ANIMATION_FRAME_RESOLUTION = (1920, 1080)
 FEMM_RUN_TIMEOUT_S = 300
 
 
@@ -72,6 +70,7 @@ class FluxDensityHeatmapUI:
         self.mmf_calculator = TeethSlotMMFCalculator()
         self.flux_calculator = FluxCalculator()
         self.reluctance_results = None
+        self._reluctance_cache = None
         self.mmf_results = None
         self.flux_results = None
         self.femm_process = None
@@ -82,17 +81,14 @@ class FluxDensityHeatmapUI:
         self.animation_span_degrees = 360.0
         self.animation_mode = VISUALISATION_MODES[0]
         self.pyqtgraph_available = PYQTGRAPH_AVAILABLE
-        self.animation_frame_dpi = ANIMATION_FRAME_DPI
-        self.animation_frame_resolution = ANIMATION_FRAME_RESOLUTION
-        self.animation_frame_figsize = self._figsize_for_resolution()
+        self.animation_model = None
+        self._animation_worker = None
+        self._cached_animation_signature = None
+        self._animation_angle = 0.0
 
-        self.animation_timer = QTimer()
+        self.animation_timer = QTimer(main_window)
+        self.animation_timer.setTimerType(Qt.TimerType.PreciseTimer)
         self.animation_timer.timeout.connect(self._advance_animation_frame)
-
-    def _figsize_for_resolution(self):
-        width, height = self.animation_frame_resolution
-        return (width / self.animation_frame_dpi,
-                height / self.animation_frame_dpi)
 
     def _set_status(self, text, kind='info'):
         """Color-coded feedback on the status line below the controls."""
@@ -110,15 +106,17 @@ class FluxDensityHeatmapUI:
         inspector = QWidget()
         inspector.setLayout(self._build_left_panel())
         scroll = QScrollArea()
+        scroll.setObjectName('studySettings')
         scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        scroll.setFrameShape(QScrollArea.NoFrame)
-        scroll.setFixedWidth(340)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        scroll.setFixedWidth(310)
         scroll.setWidget(inspector)
         main_layout.addWidget(scroll)
         main_layout.addWidget(self._build_right_panel(widget), 1)
 
         self.main_window.flux_density_page_ui = self
+        self._connect_animation_inputs()
         return widget
 
     def _build_left_panel(self):
@@ -127,7 +125,7 @@ class FluxDensityHeatmapUI:
         left_panel.setContentsMargins(4, 4, 8, 4)
         left_panel.setSpacing(12)
 
-        title = QLabel("Field analysis")
+        title = QLabel("Analysis settings")
         title.setStyleSheet(PAGE_TITLE_STYLE)
         left_panel.addWidget(title)
 
@@ -142,7 +140,7 @@ class FluxDensityHeatmapUI:
         window.flux_tabs.addTab(self._create_analysis_statistics_tab(),
                                 "Statistics")
         window.flux_tabs.addTab(self._create_animation_tab(), "Animation")
-        window.flux_tabs.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
+        window.flux_tabs.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding)
 
         controls_group = QGroupBox("Solve and validate")
         controls_layout = QVBoxLayout(controls_group)
@@ -247,7 +245,7 @@ class FluxDensityHeatmapUI:
         right_widget = QWidget()
         right_widget.setObjectName('fieldViewCard')
         right_widget.setStyleSheet(
-            'QWidget#fieldViewCard { border: 1px solid #343e4a; border-radius: 10px; }')
+            'QWidget#fieldViewCard { background: #1e1e1e; border: 1px solid #353535; border-radius: 10px; }')
         right_widget.setLayout(right_panel)
         return right_widget
 
@@ -300,7 +298,7 @@ class FluxDensityHeatmapUI:
 
         material_group = QGroupBox("Material Permeabilities")
         material_layout = QFormLayout(material_group)
-        material_layout.setRowWrapPolicy(QFormLayout.WrapLongRows)
+        material_layout.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
 
         defaults = DEFAULT_RELATIVE_PERMEABILITIES
         window.flux_ur_stator = QLineEdit(str(int(defaults['ur_stator'])))
@@ -312,7 +310,7 @@ class FluxDensityHeatmapUI:
 
         machine_group = QGroupBox("Machine Parameters")
         machine_layout = QFormLayout(machine_group)
-        machine_layout.setRowWrapPolicy(QFormLayout.WrapLongRows)
+        machine_layout.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
 
         window.flux_calc_axial_length = QLineEdit(str(int(DEFAULT_AXIAL_LENGTH_MM)))
         machine_layout.addRow("Axial length [mm]", window.flux_calc_axial_length)
@@ -328,7 +326,7 @@ class FluxDensityHeatmapUI:
 
         stats_group = QGroupBox("Analysis Statistics")
         stats_layout = QFormLayout(stats_group)
-        stats_layout.setRowWrapPolicy(QFormLayout.WrapLongRows)
+        stats_layout.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
 
         region_layout = QHBoxLayout()
         window.flux_region_selector = QComboBox()
@@ -366,7 +364,7 @@ class FluxDensityHeatmapUI:
 
         settings_group = QGroupBox("Animation Settings")
         settings_layout = QFormLayout(settings_group)
-        settings_layout.setRowWrapPolicy(QFormLayout.WrapLongRows)
+        settings_layout.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
 
         window.flux_anim_visualization_type = QComboBox()
         window.flux_anim_visualization_type.addItems(VISUALISATION_MODES)
@@ -379,28 +377,27 @@ class FluxDensityHeatmapUI:
         settings_layout.addRow("Angle Step:", window.flux_anim_angle_step_spin)
 
         window.flux_anim_interval_spin = QSpinBox()
-        window.flux_anim_interval_spin.setRange(30, 1000)
-        window.flux_anim_interval_spin.setValue(33)
+        window.flux_anim_interval_spin.setRange(8, 1000)
+        window.flux_anim_interval_spin.setValue(16)
         window.flux_anim_interval_spin.setSuffix(" ms")
         window.flux_anim_interval_spin.valueChanged.connect(
             self._update_animation_interval)
         settings_layout.addRow("Frame Interval:", window.flux_anim_interval_spin)
 
-        window.flux_anim_symmetry_check = QCheckBox("Use pair-pole symmetry")
+        window.flux_anim_symmetry_check = QCheckBox("Loop over 180° electrical")
         window.flux_anim_symmetry_check.setChecked(True)
         settings_layout.addRow("", window.flux_anim_symmetry_check)
 
         layout.addWidget(settings_group)
 
-        window.flux_anim_info_label = QLabel("Frames not generated")
-        window.flux_anim_info_label.setStyleSheet(
-            "color: #aaaaaa; font-size: 12px;")
+        window.flux_anim_info_label = QLabel("Prepare once, then play continuously.")
+        window.flux_anim_info_label.setStyleSheet(PAGE_SUBTITLE_STYLE)
         layout.addWidget(window.flux_anim_info_label)
 
         buttons_layout = QVBoxLayout()
         playback_layout = QHBoxLayout()
 
-        window.flux_prepare_anim_btn = QPushButton("Generate Frames")
+        window.flux_prepare_anim_btn = QPushButton("Prepare animation")
         window.flux_prepare_anim_btn.clicked.connect(self.prepare_animation_frames)
         window.flux_prepare_anim_btn.setEnabled(False)
         buttons_layout.addWidget(window.flux_prepare_anim_btn)
@@ -440,34 +437,19 @@ class FluxDensityHeatmapUI:
     def _setup_pyqtgraph_animation_view(self):
         if not self.pyqtgraph_available:
             return
-
         window = self.main_window
-        window.flux_anim_pg_widget = pg.GraphicsLayoutWidget()
-        window.flux_anim_pg_widget.setBackground('w')
-        window.flux_anim_pg_plot = window.flux_anim_pg_widget.addPlot()
-        window.flux_anim_pg_plot.hideAxis('left')
-        window.flux_anim_pg_plot.hideAxis('bottom')
-        window.flux_anim_pg_plot.setAspectLocked(True)
-        window.flux_anim_pg_plot.setMenuEnabled(False)
-        window.flux_anim_pg_plot.setMouseEnabled(x=False, y=False)
-        window.flux_anim_pg_plot.invertY(True)
-        view_box = window.flux_anim_pg_plot.getViewBox()
-        view_box.setDefaultPadding(0.0)
-        view_box.setAspectLocked(True)
-
-        window.flux_anim_pg_image_item = pg.ImageItem()
-        if hasattr(window.flux_anim_pg_image_item, 'setAutoDownsample'):
-            window.flux_anim_pg_image_item.setAutoDownsample(False)
-        window.flux_anim_pg_plot.addItem(window.flux_anim_pg_image_item)
+        window.flux_anim_pg_widget = FieldAnimationView()
+        window.flux_anim_pg_plot = window.flux_anim_pg_widget.plot
+        window.flux_anim_pg_image_item = window.flux_anim_pg_widget.image
 
     def _initialize_placeholder_plot(self):
         ax = self.main_window.flux_density_ax
         ax.clear()
         ax.text(0.5, 0.55, 'Magnetic field', transform=ax.transAxes,
-                ha='center', va='center', fontsize=20, color='#253449')
+                ha='center', va='center', fontsize=20, color='#262626')
         ax.text(0.5, 0.46, 'Generate a mesh, then select Solve field.',
                 transform=ax.transAxes, ha='center', va='center',
-                fontsize=11, color='#748297')
+                fontsize=11, color='#666666')
         ax.set_xlim(-100, 100)
         ax.set_ylim(-100, 100)
         ax.set_aspect('equal')
@@ -531,8 +513,14 @@ class FluxDensityHeatmapUI:
 
             progress_callback("Step 1/4: Calculating reluctances...")
             window.flux_progress_bar.setValue(15)
-            self.reluctance_results = self.reluctance_calculator.calculate_reluctances(
-                mesh_data, material_properties, machine_params, progress_callback)
+            cache_key = (id(mesh_data), tuple(sorted(mesh_data['params'].items())),
+                         tuple(sorted(material_properties.items())), machine_params['axial_length'])
+            if self._reluctance_cache is not None and self._reluctance_cache[0] == cache_key:
+                self.reluctance_results = self._reluctance_cache[1]
+            else:
+                self.reluctance_results = self.reluctance_calculator.calculate_reluctances(
+                    mesh_data, material_properties, machine_params, progress_callback)
+                self._reluctance_cache = (cache_key, self.reluctance_results)
 
             window.flux_progress_bar.setValue(35)
             progress_callback("Step 2/4: Calculating teeth MMF...")
@@ -909,346 +897,191 @@ class FluxDensityHeatmapUI:
         else:
             self._show_static_view()
 
-    def _get_pair_poles(self):
-        """Pole-pair count from the drawing inputs or the winding tab."""
-        window = self.main_window
-        if hasattr(window, 'flux_num_pair_poles'):
-            try:
-                return max(1, int(float(window.flux_num_pair_poles.text())))
-            except (ValueError, TypeError):
-                pass
-
-        if hasattr(window, 'poles_spin'):
-            return max(1, int(window.poles_spin.value()))
-
-        return 1
-
     def _get_animation_span_degrees(self):
-        """Wt span to animate; pair-pole symmetry shortens the sweep."""
+        # Wt is ELECTRICAL: its period does not depend on the pole-pair count.
+        # |B| and undirected Az contours repeat after 180 electrical degrees.
+        return 180.0 if self.main_window.flux_anim_symmetry_check.isChecked() else 360.0
+
+    def _animation_input_signature(self):
         window = self.main_window
-        use_symmetry = (hasattr(window, 'flux_anim_symmetry_check')
-                        and window.flux_anim_symmetry_check.isChecked())
-        if not use_symmetry:
-            return 360.0
-        return 360.0 / self._get_pair_poles()
+        engine = self._mmf_engine()
+        matrix = getattr(engine, 'matrix', None)
+        geometry = tuple(field.text() for field in (
+            window.flux_stator_rout, window.flux_stator_rin,
+            window.flux_air_gap_thickness, window.flux_shaft_radius,
+            window.flux_num_slots, window.flux_slot_angle, window.flux_slot_height))
+        return (id(self._mesh_data()), geometry,
+                (matrix.shape, matrix.tobytes()) if matrix is not None else None,
+                getattr(engine, 'phase_count', 3), getattr(engine, 'is_double_layer', False),
+                getattr(engine, 'turns', None), getattr(engine, 'phase_current_a', None),
+                getattr(engine, 'slot_arc_deg', None), window.flux_ur_stator.text(),
+                window.flux_ur_rotor.text(), window.flux_calc_axial_length.text())
+
+    def _connect_animation_inputs(self):
+        window = self.main_window
+        for field in (window.flux_stator_rout, window.flux_stator_rin,
+                      window.flux_air_gap_thickness, window.flux_shaft_radius,
+                      window.flux_num_slots, window.flux_slot_angle, window.flux_slot_height,
+                      window.flux_ur_stator, window.flux_ur_rotor, window.flux_calc_axial_length):
+            field.textChanged.connect(self.invalidate_animation)
+        for control in (window.phases_spin, window.slots_spin, window.poles_spin, window.span_spin,
+                        window.connection_tab.turns_spin, window.connection_tab.current_spin):
+            control.valueChanged.connect(self.invalidate_animation)
+        window.single_layer.toggled.connect(self.invalidate_animation)
+
+    def invalidate_animation(self, *_):
+        self.pause_animation()
+        self.animation_model = None
+        self.animation_frames = []
+        self._cached_animation_signature = None
+        if self._animation_worker is not None:
+            self._animation_worker.requestInterruption()
+        for name in ('flux_play_anim_btn', 'flux_pause_anim_btn', 'flux_stop_anim_btn'):
+            if hasattr(self.main_window, name):
+                getattr(self.main_window, name).setEnabled(False)
+        if hasattr(self.main_window, 'flux_anim_info_label'):
+            self.main_window.flux_anim_info_label.setText('Settings changed. Prepare animation again.')
+        self._show_static_view()
 
     def _update_animation_interval(self):
-        window = self.main_window
         if self.animation_timer.isActive():
-            self.animation_timer.setInterval(
-                int(window.flux_anim_interval_spin.value()))
-
-    def _sync_animation_frame_resolution(self):
-        """Match the frame render size to the playback viewport."""
-        target_width, target_height = ANIMATION_FRAME_RESOLUTION
-        window = self.main_window
-
-        if self.pyqtgraph_available and hasattr(window, 'flux_anim_pg_widget'):
-            widget = window.flux_anim_pg_widget
-            widget_width = int(widget.width())
-            widget_height = int(widget.height())
-
-            if widget_width > 32 and widget_height > 32:
-                dpr = (float(widget.devicePixelRatioF())
-                       if hasattr(widget, 'devicePixelRatioF') else 1.0)
-                target_width = int(np.clip(
-                    np.round(widget_width * dpr * 1.35), 960, 1920))
-                target_height = int(np.clip(
-                    np.round(widget_height * dpr * 1.35), 540, 1080))
-
-        self.animation_frame_resolution = (target_width, target_height)
-        self.animation_frame_figsize = self._figsize_for_resolution()
+            self._playback_start_angle = self._animation_angle
+            self._playback_start_time = time.perf_counter()
+            self.animation_timer.setInterval(self.main_window.flux_anim_interval_spin.value())
 
     def prepare_animation_frames(self):
-        """Solve the flux problem at each Wt sample and pre-render frames."""
+        """Prepare two basis fields in a worker; playback synthesises any angle."""
         window = self.main_window
-        try:
-            if not self.pyqtgraph_available:
-                self._set_status(
-                    "PyQtGraph is not available. Install pyqtgraph for "
-                    "high-speed animation playback.", 'warning')
-                return
-
-            mesh_data = self._mesh_data()
-            if not mesh_data:
-                self._set_status("Error: No mesh data available", 'error')
-                return
-
-            mmf_engine = self._mmf_engine()
-            if mmf_engine is None:
-                self._set_status("Error: No MMF data available", 'error')
-                return
-
-            # Run the base calculation first when needed.
-            if self.reluctance_results is None:
-                self._set_status(
-                    "Running base calculation before animation...")
-                QApplication.processEvents()
-                self.flux_calculate()
-                if self.reluctance_results is None:
-                    return
-
+        if self._animation_worker is not None:
+            self._animation_worker.requestInterruption()
+            self._set_status('Cancelling animation preparation...')
+            return
+        if not self.pyqtgraph_available or not self._mesh_data():
+            self._set_status('Generate a mesh and install pyqtgraph before animation.', 'warning')
+            return
+        signature = self._animation_input_signature()
+        if self.animation_model is not None and signature == self._cached_animation_signature:
             self.pause_animation()
-            self.animation_frames = []
-            self.animation_frame_index = 0
-            self.animation_mode = window.flux_anim_visualization_type.currentText()
-            self._sync_animation_frame_resolution()
-
-            step_deg = int(window.flux_anim_angle_step_spin.value())
-            self.animation_span_degrees = self._get_animation_span_degrees()
-            angles = np.arange(0.0, self.animation_span_degrees,
-                               float(step_deg), dtype=np.float64)
-            if angles.size == 0:
-                angles = np.array([0.0], dtype=np.float64)
-
-            machine_params = window.meshing_page_ui.get_machine_parameters()
-            machine_params['axial_length'] = float(window.flux_calc_axial_length.text())
-            mesh_settings = window.meshing_page_ui.get_current_mesh_settings()
-
-            if hasattr(window.connection_tab, 'wt_spin'):
-                original_wt = float(window.connection_tab.wt_spin.value())
-            else:
-                original_wt = float(getattr(mmf_engine, 'wt_angle_deg',
-                                            DEFAULT_WT_ANGLE_DEG))
-
-            # For the heatmap mode, build one persistent figure whose patch
-            # collection and colorbar are created once; each frame only swaps
-            # the colour array. This skips rebuilding ~thousands of wedge paths
-            # and the colorbar every frame (the dominant per-frame render cost).
-            heatmap_figure = heatmap_ax = heatmap_update = None
-            if self.animation_mode == VISUALISATION_MODES[0]:  # "B Heatmap"
-                heatmap_figure, heatmap_ax = plt.subplots(
-                    figsize=self.animation_frame_figsize,
-                    dpi=self.animation_frame_dpi)
-                heatmap_figure.patch.set_facecolor('white')
-                heatmap_figure.set_layout_engine('tight')
-                heatmap_update = setup_heatmap_animation(
-                    heatmap_ax, heatmap_figure, mesh_data, machine_params)
-
+            self._activate_animation_model(self.animation_model)
+            return
+        self.pause_animation()
+        try:
+            materials = {'ur_stator': float(window.flux_ur_stator.text()),
+                         'ur_rotor': float(window.flux_ur_rotor.text()),
+                         'ur_air': DEFAULT_RELATIVE_PERMEABILITIES['ur_air']}
+            # All worker inputs are snapshots, never live Qt controls/shared engines.
+            mesh = deepcopy(self._mesh_data())
+            engine = deepcopy(self._mmf_engine())
+            resolution = int(np.clip(window.flux_density_canvas.height(), 480, 800))
+            worker = AnimationPreparation(
+                window, mesh=mesh, engine=engine, materials=materials,
+                axial_length_mm=float(window.flux_calc_axial_length.text()),
+                mesh_settings=dict(window.meshing_page_ui.get_current_mesh_settings()),
+                resolution=resolution)
+            self._animation_worker = worker
+            self._animation_generation_signature = signature
+            worker.progress.connect(self._animation_progress)
+            worker.prepared.connect(self._animation_prepared)
+            worker.failed.connect(self._animation_failed)
+            worker.finished.connect(self._animation_worker_finished)
+            window.flux_prepare_anim_btn.setText('Cancel preparation')
             window.flux_progress_bar.setVisible(True)
             window.flux_progress_bar.setValue(0)
-
-            try:
-                total_frames = len(angles)
-                for idx, wt in enumerate(angles):
-                    mmf_engine.update_wt_angle(float(wt))
-
-                    # Animation only needs the aligned MMF array
-                    # (build_full=False skips assembling thousands of
-                    # per-element dicts) and never reads the per-solve
-                    # statistics, so skip computing those too.
-                    mmf_results = self.mmf_calculator.calculate_teeth_mmf(
-                        mesh_data, mesh_settings, mmf_engine,
-                        progress_callback=None, build_full=False)
-
-                    flux_results = self.flux_calculator.calculate_flux_distribution(
-                        self.reluctance_results, mmf_results, SOLVER_OPTIONS,
-                        progress_callback=None, include_statistics=False)
-
-                    flux_densities = flux_results.get('flux_densities', {})
-                    branch_fluxes = flux_results.get('branch_fluxes', {})
-
-                    if heatmap_update is not None:
-                        frame_image = self._render_persistent_heatmap_frame(
-                            heatmap_figure, heatmap_ax, heatmap_update,
-                            flux_densities, branch_fluxes, wt,
-                            mesh_data, machine_params)
-                    else:
-                        frame_image = self._build_animation_image_frame(
-                            self.animation_mode, mesh_data, machine_params,
-                            flux_densities, branch_fluxes, wt)
-
-                    self.animation_frames.append({
-                        'wt': float(wt),
-                        'flux_densities': flux_densities,
-                        'branch_fluxes': branch_fluxes,
-                        'image': frame_image,
-                    })
-
-                    progress = int(((idx + 1) / total_frames) * 100)
-                    window.flux_progress_bar.setValue(progress)
-                    self._set_status(
-                        f"Generating animation frames... {idx + 1}/{total_frames} "
-                        f"(Wt={wt:.1f}°, solver={SOLVER_LABEL})")
-                    QApplication.processEvents()
-            finally:
-                if heatmap_figure is not None:
-                    plt.close(heatmap_figure)
-
-            # Restore the configured Wt after the sweep.
-            mmf_engine.update_wt_angle(original_wt)
-            if hasattr(window.connection_tab, 'wt_spin'):
-                window.connection_tab.wt_spin.blockSignals(True)
-                window.connection_tab.wt_spin.setValue(int(round(original_wt)))
-                window.connection_tab.wt_spin.blockSignals(False)
-
-            window.flux_anim_info_label.setText(
-                f"{len(self.animation_frames)} frames | {self.animation_mode} | "
-                f"span 0°-{self.animation_span_degrees:.1f}° | step {step_deg}° | "
-                f"{self.animation_frame_resolution[0]}x"
-                f"{self.animation_frame_resolution[1]} @ "
-                f"{self.animation_frame_dpi} dpi")
-
-            if self.animation_frames:
-                self._render_animation_frame(0)
-                window.flux_play_anim_btn.setEnabled(True)
-                window.flux_pause_anim_btn.setEnabled(False)
-                window.flux_stop_anim_btn.setEnabled(True)
-                self._set_status(
-                    "Animation frames ready. Press Play.", 'success')
-            else:
-                self._set_status(
-                    "Failed to generate animation frames", 'error')
-
+            for button in (window.flux_play_anim_btn, window.flux_pause_anim_btn, window.flux_stop_anim_btn):
+                button.setEnabled(False)
+            worker.start()
         except Exception as error:
-            self._set_status(
-                f"Animation generation failed: {error}", 'error')
-            logger.exception("Error generating animation frames")
-        finally:
-            window.flux_progress_bar.setVisible(False)
+            self._set_status(f'Animation preparation failed: {error}', 'error')
 
-    def _render_persistent_heatmap_frame(self, figure, ax, update,
-                                         flux_densities, branch_fluxes, wt,
-                                         mesh_data, machine_params):
-        """Render one heatmap frame by updating the persistent collection only.
+    def _animation_progress(self, percent, message):
+        self.main_window.flux_progress_bar.setValue(percent)
+        self._set_status(message)
 
-        Falls back to the full per-frame builder when a frame has no flux data
-        (matching the original heatmap behaviour exactly in that case).
-        """
-        if not update(flux_densities):
-            return self._build_animation_image_frame(
-                self.animation_mode, mesh_data, machine_params,
-                flux_densities, branch_fluxes, wt)
+    def _animation_prepared(self, model):
+        if (self._animation_worker.isInterruptionRequested()
+                or self._animation_generation_signature != self._animation_input_signature()):
+            self._set_status('Settings changed. Prepare animation again.', 'warning')
+            return
+        self.animation_model = model
+        self._cached_animation_signature = self._animation_generation_signature
+        self._activate_animation_model(model)
 
-        ax.set_title(f"{self.animation_mode} | Wt={wt:.1f}°", color='black',
-                     fontsize=13, pad=14)
-        figure.canvas.draw()
-        width, height = figure.canvas.get_width_height()
-        image = np.frombuffer(figure.canvas.buffer_rgba(), dtype=np.uint8)
-        image = image.reshape(height, width, 4)
-        return np.ascontiguousarray(image[:, :, :3])
+    def _activate_animation_model(self, model):
+        window = self.main_window
+        self.animation_mode = window.flux_anim_visualization_type.currentText()
+        self.animation_span_degrees = self._get_animation_span_degrees()
+        step = window.flux_anim_angle_step_spin.value()
+        self.animation_frames = [{'wt': float(a)} for a in np.arange(0, self.animation_span_degrees, step)]
+        self.animation_frame_index = 0
+        self._animation_angle = 0.0
+        window.flux_anim_pg_widget.set_model(model, self.animation_mode,
+                                             window.flux_contour_count.value())
+        self._render_animation_frame(0)
+        window.flux_play_anim_btn.setEnabled(True)
+        window.flux_pause_anim_btn.setEnabled(False)
+        window.flux_stop_anim_btn.setEnabled(True)
+        self._set_status(f'Animation ready in {model.generation_seconds:.2f} s | '
+                         f'2 field solves | {model.storage_bytes/1048576:.1f} MB. Press Play.', 'success')
 
-    def _build_animation_image_frame(self, mode, mesh_data, machine_params,
-                                     flux_densities, branch_fluxes, wt):
-        """Render one RGB frame image for pyqtgraph playback."""
-        frame_figure, frame_ax = plt.subplots(
-            figsize=self.animation_frame_figsize, dpi=self.animation_frame_dpi)
-        frame_figure.patch.set_facecolor('white')
-        frame_figure.set_layout_engine('constrained')
+    def _animation_failed(self, message):
+        self._set_status(message if 'cancelled' in message.lower()
+                         else f'Animation preparation failed: {message}', 'warning')
 
-        try:
-            success = self._render_mode(mode, frame_ax, frame_figure, mesh_data,
-                                        flux_densities, branch_fluxes,
-                                        machine_params)
-            if success:
-                frame_ax.set_title(f"{mode} | Wt={wt:.1f}°", color='black',
-                                   fontsize=13, pad=14)
-            else:
-                frame_ax.clear()
-                frame_ax.text(0, 0, f"Failed to render {mode}\nWt={wt:.1f}°",
-                              ha='center', va='center', fontsize=12, color='red',
-                              bbox=dict(boxstyle="round,pad=0.5",
-                                        facecolor="#ffcccc", alpha=0.8))
-                frame_ax.set_xlim(-100, 100)
-                frame_ax.set_ylim(-100, 100)
-                frame_ax.set_aspect('equal')
+    def _animation_worker_finished(self):
+        worker = self._animation_worker
+        self._animation_worker = None
+        self.main_window.flux_prepare_anim_btn.setText('Prepare animation')
+        self.main_window.flux_progress_bar.setVisible(False)
+        worker.deleteLater()
 
-            frame_figure.canvas.draw()
-            width, height = frame_figure.canvas.get_width_height()
-            image = np.frombuffer(frame_figure.canvas.buffer_rgba(),
-                                  dtype=np.uint8)
-            image = image.reshape(height, width, 4)
-            return np.ascontiguousarray(image[:, :, :3])
-        finally:
-            plt.close(frame_figure)
+    def _render_animation_angle(self, angle):
+        self._animation_angle = angle
+        self._show_animation_view()
+        self.main_window.flux_anim_pg_widget.show_angle(angle)
+        self.main_window.flux_anim_info_label.setText(
+            f'Wt={angle:.1f}° | {self.animation_span_degrees:.0f}° loop | continuous playback')
 
     def _render_animation_frame(self, frame_index):
-        """Display one precomputed frame (pyqtgraph or matplotlib fallback)."""
-        if not self.animation_frames:
-            return
-
-        window = self.main_window
-        frame = self.animation_frames[frame_index]
-        frame_image = frame.get('image')
-
-        if (self.pyqtgraph_available and frame_image is not None
-                and hasattr(window, 'flux_anim_pg_image_item')):
-            self._show_animation_view()
-            window.flux_anim_pg_image_item.setImage(
-                frame_image, autoLevels=False, levels=(0, 255))
-            img_h, img_w = frame_image.shape[:2]
-            window.flux_anim_pg_image_item.setRect(
-                QRectF(0, 0, float(img_w), float(img_h)))
-            view_box = window.flux_anim_pg_plot.getViewBox()
-            view_box.setRange(xRange=(0.0, float(img_w)),
-                              yRange=(0.0, float(img_h)),
-                              padding=0.0, disableAutoRange=True)
-        else:
-            self._show_static_view()
-            self._reset_visualisation_axis()
-
-            success = self._render_mode(
-                self.animation_mode,
-                window.flux_density_ax,
-                window.flux_density_figure,
-                self._mesh_data(),
-                frame['flux_densities'],
-                frame['branch_fluxes'],
-                window.meshing_page_ui.get_machine_parameters())
-            if success:
-                window.flux_density_canvas.draw_idle()
-
-        window.flux_anim_info_label.setText(
-            f"Frame {frame_index + 1}/{len(self.animation_frames)} | "
-            f"Wt={frame['wt']:.1f}° | "
-            f"span 0°-{self.animation_span_degrees:.1f}°")
+        if self.animation_frames and self.animation_model is not None:
+            self._render_animation_angle(self.animation_frames[frame_index]['wt'])
 
     def _advance_animation_frame(self):
-        if not self.animation_frames:
+        if not self.animation_frames or self.animation_model is None:
             self.pause_animation()
             return
-
-        self.animation_frame_index = ((self.animation_frame_index + 1)
-                                      % len(self.animation_frames))
-        self._render_animation_frame(self.animation_frame_index)
+        elapsed_ms = (time.perf_counter() - self._playback_start_time) * 1000
+        window = self.main_window
+        angle = (self._playback_start_angle + elapsed_ms * window.flux_anim_angle_step_spin.value()
+                 / window.flux_anim_interval_spin.value()) % self.animation_span_degrees
+        self._render_animation_angle(angle)
 
     def play_animation(self):
-        window = self.main_window
-        if not self.pyqtgraph_available:
-            self._set_status(
-                "PyQtGraph backend unavailable for animation playback",
-                'warning')
+        if self.animation_model is None or not self.animation_frames:
+            self._set_status('Prepare animation first.', 'warning')
             return
-
-        if not self.animation_frames:
-            self._set_status(
-                "No frames found. Generate frames first.", 'warning')
-            return
-
-        self._show_animation_view()
-        self.animation_timer.start(int(window.flux_anim_interval_spin.value()))
-        window.flux_play_anim_btn.setEnabled(False)
-        window.flux_pause_anim_btn.setEnabled(True)
-        window.flux_stop_anim_btn.setEnabled(True)
-        self._set_status("Animation playing...")
+        self._playback_start_time = time.perf_counter()
+        self._playback_start_angle = self._animation_angle
+        self.animation_timer.start(self.main_window.flux_anim_interval_spin.value())
+        self.main_window.flux_play_anim_btn.setEnabled(False)
+        self.main_window.flux_pause_anim_btn.setEnabled(True)
+        self.main_window.flux_stop_anim_btn.setEnabled(True)
+        self._set_status('Animation playing...')
 
     def pause_animation(self):
-        window = self.main_window
-        if self.animation_timer.isActive():
-            self.animation_timer.stop()
-        if hasattr(window, 'flux_play_anim_btn'):
-            window.flux_play_anim_btn.setEnabled(bool(self.animation_frames))
-        if hasattr(window, 'flux_pause_anim_btn'):
-            window.flux_pause_anim_btn.setEnabled(False)
-        if self.animation_frames:
-            self._set_status("Animation paused", 'muted')
+        was_running = self.animation_timer.isActive()
+        self.animation_timer.stop()
+        if hasattr(self.main_window, 'flux_play_anim_btn'):
+            self.main_window.flux_play_anim_btn.setEnabled(bool(self.animation_frames))
+            self.main_window.flux_pause_anim_btn.setEnabled(False)
+        if was_running:
+            self._set_status('Animation paused.', 'muted')
 
     def stop_animation(self):
         self.pause_animation()
         self.animation_frame_index = 0
         if self.animation_frames:
             self._render_animation_frame(0)
-            self._set_status("Animation stopped", 'muted')
+            self._set_status('Animation stopped.', 'muted')
 
     # --------------------------------------------------------- FEMM validation
 
@@ -1260,6 +1093,7 @@ class FluxDensityHeatmapUI:
         matrix = getattr(engine, 'matrix', None)
         return (id(mesh), repr(mesh['params']) if mesh else None,
                 (matrix.shape, matrix.tobytes()) if matrix is not None else None,
+                getattr(engine, 'phase_count', 3), getattr(engine, 'is_double_layer', None),
                 getattr(engine, 'turns', None),
                 getattr(engine, 'phase_current_a', None),
                 getattr(engine, 'wt_angle_deg', None),
@@ -1276,7 +1110,7 @@ class FluxDensityHeatmapUI:
         try:
             mesh = self._mesh_data()
             if not mesh:
-                raise ValueError('Generate a mesh in Step 2 before validating.')
+                raise ValueError('Generate a mesh in Mesh (stage 04) before validating.')
             engine = self._mmf_engine()
             if engine is None or engine.matrix is None:
                 raise ValueError('Generate the winding and MMF curves first.')
@@ -1303,10 +1137,12 @@ class FluxDensityHeatmapUI:
             self._femm_run = {
                 'directory': run_dir,
                 'results': run_dir / 'validation_results.txt',
+                'response': run_dir / 'worker-response.json',
                 'local': local,
                 'profile': airgap_profile(self.flux_results, airgap_samples(mesh)),
                 'signature': signature,
-                'inputs': (f'{mesh["params"]["num_slots"]} slots, '
+                'inputs': (f'{getattr(engine, "phase_count", 3)} phases, '
+                           f'{mesh["params"]["num_slots"]} slots, '
                            f'{engine.turns} turns, '
                            f'{engine.phase_current_a:g} A, '
                            f'Wt={engine.wt_angle_deg:g} deg'),
@@ -1323,10 +1159,11 @@ class FluxDensityHeatmapUI:
             window.flux_progress_bar.setVisible(True)
             self._set_status('Running FEMM comparison for the current model...')
             self.femm_process.setWorkingDirectory(str(PROJECT_ROOT))
-            self.femm_process.start(sys.executable, [
-                '-u', str(PROJECT_ROOT / 'tools' / 'femm_check.py'),
+            command = femm_worker_command()
+            self.femm_process.start(command[0], command[1:] + [
                 '--script', str(script),
                 '--results', str(self._femm_run['results']),
+                '--response', str(self._femm_run['response']),
                 '--timeout', str(FEMM_RUN_TIMEOUT_S), '--keep-open'])
         except Exception as error:
             window.flux_femm_validation_btn.setEnabled(True)
@@ -1340,8 +1177,8 @@ class FluxDensityHeatmapUI:
             self.femm_process.kill()
 
     def _femm_process_error(self, error):
-        if error == QProcess.FailedToStart and self.femm_process is not None:
-            self._finish_femm_validation(-1, QProcess.CrashExit)
+        if error == QProcess.ProcessError.FailedToStart and self.femm_process is not None:
+            self._finish_femm_validation(-1, QProcess.ExitStatus.CrashExit)
 
     def _femm_failure(self, message):
         self._set_status(f'FEMM validation failed: {message}', 'error')
@@ -1364,11 +1201,15 @@ class FluxDensityHeatmapUI:
         window.flux_progress_bar.setVisible(False)
         window.flux_progress_bar.setRange(0, 100)
         try:
+            response_path = run.get('response')
+            response = (json.loads(response_path.read_text(encoding='utf-8'))
+                        if response_path and response_path.is_file() else {})
             if run.get('timed_out'):
                 raise RuntimeError('FEMM validation timed out.')
-            if exit_code != 0 or exit_status != QProcess.NormalExit:
-                raise RuntimeError(stderr.strip() or 'FEMM worker could not run.')
-            payload = json.loads(stdout)
+            if exit_code != 0 or exit_status != QProcess.ExitStatus.NormalExit:
+                raise RuntimeError(response.get('error') or stderr.strip()
+                                   or 'FEMM worker could not run.')
+            payload = response or json.loads(stdout)
             femm_metrics = parse_validation_results(run['results'])
             summary = [run['inputs'], f'Run backend: {payload["backend"]}',
                        'FEMM remains open: |B| colour map, flux lines and field values.',

@@ -5,23 +5,40 @@ interactive widgets as attributes of the main window because the other tabs
 (MMF curves, flux viewer) read them for cross-tab synchronisation.
 """
 
-from PyQt5.QtCore import Qt
-from PyQt5.QtWidgets import (QFileDialog, QFormLayout, QFrame, QGroupBox,
+from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QValidator
+from PyQt6.QtWidgets import (QFileDialog, QFormLayout, QFrame, QGroupBox,
                              QHBoxLayout, QLabel, QPushButton, QRadioButton,
                              QButtonGroup, QScrollArea, QSizePolicy, QSpinBox,
                              QSplitter, QVBoxLayout, QWidget)
 
-from core.winding_analysis import (check_winding_feasibility,
-                                   generate_winding_explanation)
+from core.winding_analysis import check_winding_feasibility
+from core.connection_matrix import effective_coil_span
+from utils.phases import MAX_PHASE_COUNT
 from ui.stator_drawing import StatorDrawing
 from ui.theme import (PAGE_SUBTITLE_STYLE, PAGE_TITLE_STYLE, SPIN_BOX_STYLE,
                       badge_style)
 from utils.constants import DEFAULT_NUM_SLOTS, DEFAULT_PAIR_POLES, SLOT_COUNT_RANGE
 
 CONTROL_PANEL_MIN_WIDTH_PX = 290
-EXPLANATION_PANEL_MIN_WIDTH_PX = 290
 LEFT_PANEL_MIN_WIDTH_PX = 320
 DRAWING_MIN_SIZE_PX = (380, 380)
+
+
+class PoleCountSpinBox(QSpinBox):
+    """Accept complete pole counts, always in even steps."""
+
+    def validate(self, text, position):
+        state, text, position = super().validate(text, position)
+        if state == QValidator.State.Acceptable and int(text) % 2:
+            state = QValidator.State.Intermediate
+        return state, text, position
+
+    def fixup(self, text):
+        try:
+            return str(max(2, 2 * round(int(text) / 2)))
+        except ValueError:
+            return str(self.value())
 
 
 class WindingTabController:
@@ -37,9 +54,9 @@ class WindingTabController:
     def _build_ui(self):
         window = self.window
 
-        main_splitter = QSplitter(Qt.Horizontal)
+        main_splitter = QSplitter(Qt.Orientation.Horizontal)
         main_layout = QHBoxLayout(window.tab_main)
-        main_layout.setContentsMargins(14, 14, 14, 14)
+        main_layout.setContentsMargins(20, 18, 20, 18)
         main_layout.addWidget(main_splitter)
 
         left_widget = QWidget()
@@ -47,17 +64,16 @@ class WindingTabController:
         left_layout.setContentsMargins(0, 0, 8, 0)
         left_layout.setSpacing(10)
         controls = self._build_control_panel()
-        controls.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
+        controls.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
         left_layout.addWidget(controls)
-        explanation = self._build_explanation_panel()
-        explanation.setMinimumHeight(190)
-        left_layout.addWidget(explanation, 1)
+        left_layout.addStretch()
         sidebar = QScrollArea()
+        sidebar.setObjectName('studySettings')
         sidebar.setWidgetResizable(True)
-        sidebar.setFrameShape(QFrame.NoFrame)
-        sidebar.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        sidebar.setFrameShape(QFrame.Shape.NoFrame)
+        sidebar.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         sidebar.setMinimumWidth(LEFT_PANEL_MIN_WIDTH_PX)
-        sidebar.setMaximumWidth(370)
+        sidebar.setMaximumWidth(330)
         sidebar.setWidget(left_widget)
 
         right_widget = self._build_drawing_panel()
@@ -81,14 +97,20 @@ class WindingTabController:
         control_layout.setContentsMargins(0, 0, 0, 0)
         control_layout.setSpacing(10)
 
-        title = QLabel("Winding layout")
+        title = QLabel("Winding settings")
         title.setStyleSheet(PAGE_TITLE_STYLE)
         control_layout.addWidget(title)
 
-        subtitle = QLabel("Define the coils. The layout and winding checks update as you edit.")
+        subtitle = QLabel("The drawing and checks update live.")
         subtitle.setStyleSheet(PAGE_SUBTITLE_STYLE)
         subtitle.setWordWrap(True)
         control_layout.addWidget(subtitle)
+
+        window.phases_spin = QSpinBox()
+        window.phases_spin.setRange(1, MAX_PHASE_COUNT)
+        window.phases_spin.setValue(3)
+        window.phases_spin.setToolTip('Number of phases for the Dolomites winding generator.')
+        window.phases_spin.valueChanged.connect(self.update_winding)
 
         min_slots, max_slots = SLOT_COUNT_RANGE
 
@@ -100,13 +122,13 @@ class WindingTabController:
         window.slots_spin.valueChanged.connect(
             lambda: window.span_spin.setMaximum(window.slots_spin.value()))
         window.slots_spin.valueChanged.connect(
-            lambda: window.poles_spin.setMaximum(window.slots_spin.value() // 3))
+            lambda: window.poles_spin.setMaximum(2 * window.slots_spin.value()))
         window.slots_spin.valueChanged.connect(self.update_span_for_double_layer)
 
-        window.poles_spin = QSpinBox()
-        window.poles_spin.setRange(1, window.slots_spin.value() // 6)
-        window.poles_spin.setSingleStep(1)
-        window.poles_spin.setValue(DEFAULT_PAIR_POLES)
+        window.poles_spin = PoleCountSpinBox()
+        window.poles_spin.setRange(2, 2 * window.slots_spin.value())
+        window.poles_spin.setSingleStep(2)
+        window.poles_spin.setValue(DEFAULT_PAIR_POLES * 2)
         window.poles_spin.setStyleSheet(SPIN_BOX_STYLE)
         window.poles_spin.valueChanged.connect(self.update_winding)
         window.poles_spin.valueChanged.connect(self.update_span_for_double_layer)
@@ -129,17 +151,18 @@ class WindingTabController:
         self._winding_group.addButton(window.double_layer)
 
         window.slots_spin.setToolTip("Total number of stator slots.")
-        window.poles_spin.setToolTip("Number of pole pairs (poles = pairs × 2).")
+        window.poles_spin.setToolTip("Total number of magnetic poles (2, 4, 6, …).")
         window.span_spin.setToolTip(
-            "Coil span in slots. Snaps to the pole pitch in double-layer mode.")
+            "Dolomites coil throw in slots. Single-layer windings use an odd throw.")
 
         config_group = QGroupBox("Coil configuration")
         config_form = QFormLayout(config_group)
         config_form.setSpacing(8)
         config_form.setContentsMargins(10, 10, 10, 10)
 
+        config_form.addRow("Phases", window.phases_spin)
         config_form.addRow("Slots", window.slots_spin)
-        config_form.addRow("Pole pairs", window.poles_spin)
+        config_form.addRow("Poles", window.poles_spin)
         config_form.addRow("Coil span · slots", window.span_spin)
 
         layer_row = QVBoxLayout()
@@ -167,39 +190,14 @@ class WindingTabController:
         window.feasibility_label = QLabel("–")
         window.feasibility_label.setWordWrap(True)
         window.feasibility_label.setStyleSheet(badge_style('muted'))
-        window.feasibility_label.setSizePolicy(QSizePolicy.Expanding,
-                                               QSizePolicy.Minimum)
+        window.feasibility_label.setSizePolicy(QSizePolicy.Policy.Expanding,
+                                               QSizePolicy.Policy.Minimum)
         results_form.addRow(window.feasibility_label)
 
         control_layout.addWidget(results_group)
         control_layout.addStretch()
 
         return control_widget
-
-    def _build_explanation_panel(self):
-        window = self.window
-
-        container = QGroupBox("Design notes")
-        container.setMinimumWidth(EXPLANATION_PANEL_MIN_WIDTH_PX)
-        layout = QVBoxLayout(container)
-        layout.setContentsMargins(8, 14, 8, 8)
-
-        window.explanation_text = QLabel()
-        window.explanation_text.setWordWrap(True)
-        window.explanation_text.setAlignment(Qt.AlignTop | Qt.AlignLeft)
-        window.explanation_text.setStyleSheet(
-            "background: transparent; padding: 4px; font-size: 12px; color: #a2afbf;")
-
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.NoFrame)
-        scroll.setStyleSheet(
-            "QScrollArea { background: transparent; border: none; }"
-            "QScrollArea > QWidget > QWidget { background: transparent; }")
-        scroll.setWidget(window.explanation_text)
-        layout.addWidget(scroll)
-
-        return container
 
     def _build_drawing_panel(self):
         window = self.window
@@ -209,22 +207,29 @@ class WindingTabController:
         right_layout.setContentsMargins(8, 0, 0, 0)
 
         drawing_container = QFrame()
+        drawing_container.setObjectName('windingDrawingCard')
         drawing_container.setStyleSheet(
-            "QFrame { background-color: white; border: 1px solid #2a313c;"
+            "QFrame#windingDrawingCard { background-color: white; border: 1px solid #dedede;"
             "border-radius: 8px; }")
         drawing_layout = QVBoxLayout(drawing_container)
         drawing_layout.setContentsMargins(10, 10, 10, 10)
 
-        window.stator_drawing = StatorDrawing()
-        window.stator_drawing.setMinimumSize(*DRAWING_MIN_SIZE_PX)
-        window.stator_drawing.setSizePolicy(QSizePolicy.Expanding,
-                                            QSizePolicy.Expanding)
-        drawing_layout.addWidget(window.stator_drawing, 1)
-
-        save_image_btn = QPushButton("Save Drawing")
+        drawing_header = QHBoxLayout()
+        preview_title = QLabel('Live preview')
+        preview_title.setStyleSheet('color: #262626; font-size: 14px; font-weight: 600;')
+        drawing_header.addWidget(preview_title)
+        drawing_header.addStretch()
+        save_image_btn = QPushButton("Save drawing")
         save_image_btn.setToolTip("Export the stator drawing as a PNG image.")
         save_image_btn.clicked.connect(self.save_stator_image)
-        drawing_layout.addWidget(save_image_btn, alignment=Qt.AlignRight)
+        drawing_header.addWidget(save_image_btn)
+        drawing_layout.addLayout(drawing_header)
+
+        window.stator_drawing = StatorDrawing()
+        window.stator_drawing.setMinimumSize(*DRAWING_MIN_SIZE_PX)
+        window.stator_drawing.setSizePolicy(QSizePolicy.Policy.Expanding,
+                                            QSizePolicy.Policy.Expanding)
+        drawing_layout.addWidget(window.stator_drawing, 1)
 
         right_layout.addWidget(drawing_container)
         return right_widget
@@ -232,23 +237,27 @@ class WindingTabController:
     # --------------------------------------------------------------- actions
 
     def actual_poles(self):
-        """Actual pole count (UI works in pole pairs)."""
-        return self.window.poles_spin.value() * 2
+        """Total magnetic pole count entered in the UI."""
+        return self.window.poles_spin.value()
 
     def update_winding(self):
-        """Recompute feasibility, report, drawing, and dependent tabs."""
+        """Recompute feasibility, drawing, and dependent tabs."""
         window = self.window
         slots = window.slots_spin.value()
         poles = self.actual_poles()
         is_double_layer = window.double_layer.isChecked()
+        phase_count = window.phases_spin.value()
         if hasattr(window, 'winding_context_label'):
             window.winding_context_label.setText(
-                f'{slots} slots · {poles} poles · '
+                f'{phase_count} phases | {slots} slots · {poles} poles · '
                 + ('Double layer' if is_double_layer else 'Single layer'))
-        coil_span = (slots // poles if window.single_layer.isChecked()
-                     else window.span_spin.value())
-
-        feasible, messages, q = check_winding_feasibility(slots, poles)
+        coil_span = effective_coil_span(slots, poles, is_double_layer, min(slots, window.span_spin.value()))
+        if coil_span != window.span_spin.value():
+            window.span_spin.blockSignals(True)
+            window.span_spin.setValue(coil_span)
+            window.span_spin.blockSignals(False)
+        feasible, messages, q = check_winding_feasibility(
+            slots, poles, phase_count, is_double_layer, coil_span)
 
         window.slots_per_pole_label.setText(f"{slots / poles:.2f}")
         window.slots_per_phase_label.setText(str(q))
@@ -264,17 +273,15 @@ class WindingTabController:
                 "✗ NOT FEASIBLE\n" + "\n".join(messages))
             window.feasibility_label.setStyleSheet(badge_style('error'))
 
-        window.explanation_text.setText(generate_winding_explanation(
-            slots, poles, coil_span, is_double_layer, q))
         window.stator_drawing.update_parameters(slots, poles, coil_span,
-                                                is_double_layer)
+                                                is_double_layer, phase_count)
 
         # Keep the MMF tab in sync with the new winding pattern.
         if hasattr(window, 'connection_tab'):
             window.connection_tab.update_matrix(
                 window.stator_drawing.winding_pattern,
                 window.stator_drawing.is_double_layer,
-                poles, coil_span=coil_span)
+                poles, coil_span=coil_span, phase_count=phase_count)
 
     def update_span_for_double_layer(self):
         """Snap the coil span to the pole pitch while in double layer mode."""
@@ -285,33 +292,28 @@ class WindingTabController:
 
     def handle_single_layer_toggle(self):
         window = self.window
-        is_single = window.single_layer.isChecked()
-        window.span_spin.setEnabled(not is_single)
-        if is_single:
-            window.span_spin.clear()
-        else:
-            pole_pitch = window.slots_spin.value() // self.actual_poles()
-            window.span_spin.setValue(pole_pitch)
-            window.span_spin.clear()
+        window.span_spin.setEnabled(True)
+        window.span_spin.setSingleStep(2 if window.single_layer.isChecked() else 1)
+        self.update_winding()
 
     def save_stator_image(self):
         """Save the stator drawing with a configuration-derived filename."""
         window = self.window
         slots = window.slots_spin.value()
-        pair_of_poles = window.poles_spin.value()
-        phases = 3
+        poles = window.poles_spin.value()
+        phases = window.phases_spin.value()
         is_single = window.single_layer.isChecked()
         winding_type = "SingleL" if is_single else "DoubleL"
 
-        _, _, q = check_winding_feasibility(slots, self.actual_poles())
+        _, _, q = check_winding_feasibility(slots, self.actual_poles(), phases, not is_single, window.span_spin.value())
         q_type = "qfrac" if q.denominator > 1 else "qint"
 
         if is_single:
-            default_filename = (f"{slots}slots_{pair_of_poles}pairpoles_"
+            default_filename = (f"{slots}slots_{poles}poles_"
                                 f"{phases}phases_{winding_type}_{q_type}.png")
         else:
             coil_span = window.span_spin.value()
-            default_filename = (f"{slots}slots_{pair_of_poles}pairpoles_"
+            default_filename = (f"{slots}slots_{poles}poles_"
                                 f"{phases}phases_{winding_type}_span{coil_span}_"
                                 f"{q_type}.png")
 

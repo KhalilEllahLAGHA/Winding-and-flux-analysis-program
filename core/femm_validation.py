@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 
 from core.meshing_engine import _validate_geometry
-from core.mmf_engine import _three_phase_sin_factors
+from utils.phases import matrix_layout, phase_sin_factors
 from utils.paths import FEMM_VALIDATION_SCRIPT
 
 
@@ -95,13 +95,15 @@ def compare_airgap_profiles(local_profile, reference_path):
 def slot_ampere_turns(mmf_engine):
     """Signed NI per slot; double-layer current follows the app's split."""
     matrix = np.asarray(mmf_engine.matrix, dtype=float)
-    if matrix.ndim != 2 or matrix.shape[0] not in (3, 6):
-        raise ValueError('Generate a three-phase connection matrix first.')
+    if matrix.ndim != 2 or matrix.shape[1] == 0:
+        raise ValueError('Generate a connection matrix first.')
+    count, double = matrix_layout(matrix, getattr(mmf_engine, 'phase_count', None),
+                                  getattr(mmf_engine, 'is_double_layer', None))
     if not np.isfinite(matrix).all():
         raise ValueError('The connection matrix contains non-finite values.')
-    if matrix.shape[0] == 6:
-        matrix = (matrix[:3] + matrix[3:]) / 2
-    currents = np.asarray(_three_phase_sin_factors(mmf_engine.wt_angle_deg))
+    if double:
+        matrix = (matrix[:count] + matrix[count:]) / 2
+    currents = phase_sin_factors(mmf_engine.wt_angle_deg, count)
     values = (currents @ matrix * float(mmf_engine.turns)
               * float(mmf_engine.phase_current_a))
     if not np.isfinite(values).all():
@@ -143,6 +145,7 @@ def build_validation_script(mesh_data, mmf_engine, material_properties,
         'wt_deg': float(mmf_engine.wt_angle_deg),
         'turns': float(mmf_engine.turns),
         'excitation_current_a': float(mmf_engine.phase_current_a),
+        'phase_count': getattr(mmf_engine, 'phase_count', 3),
     }
     lines.extend(f'{key} = {float(value):.17g}' for key, value in values.items())
     lines += [

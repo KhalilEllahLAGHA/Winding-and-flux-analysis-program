@@ -14,10 +14,10 @@ import logging
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
-from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
-from PyQt5.QtCore import QSize, Qt, QTimer
-from PyQt5.QtWidgets import (QApplication, QComboBox, QFileDialog, QFormLayout,
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as NavigationToolbar
+from PyQt6.QtCore import QSize, Qt, QTimer
+from PyQt6.QtWidgets import (QApplication, QComboBox, QFileDialog, QFormLayout,
                              QFrame, QGroupBox, QHBoxLayout, QLabel, QProgressBar,
                              QPushButton, QScrollArea, QSizePolicy, QSpinBox,
                              QTabWidget, QTextEdit,
@@ -56,11 +56,12 @@ class MeshingPageUI:
         settings = QWidget()
         settings.setLayout(self._build_settings_panel())
         sidebar = QScrollArea()
+        sidebar.setObjectName('studySettings')
         sidebar.setWidgetResizable(True)
-        sidebar.setFrameShape(QFrame.NoFrame)
-        sidebar.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        sidebar.setMinimumWidth(320)
-        sidebar.setMaximumWidth(350)
+        sidebar.setFrameShape(QFrame.Shape.NoFrame)
+        sidebar.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        sidebar.setMinimumWidth(300)
+        sidebar.setMaximumWidth(320)
         sidebar.setWidget(settings)
         main_layout.addWidget(sidebar)
         main_layout.addWidget(self._build_visualization_panel(widget), 1)
@@ -75,7 +76,7 @@ class MeshingPageUI:
         left_panel.setContentsMargins(0, 0, 5, 0)
         left_panel.setSpacing(10)
 
-        title = QLabel("Mesh configuration")
+        title = QLabel("Mesh settings")
         title.setStyleSheet(PAGE_TITLE_STYLE)
         left_panel.addWidget(title)
 
@@ -88,7 +89,7 @@ class MeshingPageUI:
         window.mesh_tabs.addTab(self._create_basic_settings_tab(), "Presets")
         window.mesh_tabs.addTab(self._create_advanced_settings_tab(),
                                 "Custom")
-        window.mesh_tabs.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
+        window.mesh_tabs.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
         left_panel.addWidget(window.mesh_tabs)
 
         button_layout = QHBoxLayout()
@@ -98,7 +99,7 @@ class MeshingPageUI:
         window.generate_mesh_btn.setObjectName("primaryButton")
         window.generate_mesh_btn.setMinimumHeight(34)
         window.generate_mesh_btn.setToolTip(
-            "Build the polar mesh from the Step 1 machine parameters.")
+            "Build the polar mesh from the Machine geometry settings.")
         window.generate_mesh_btn.clicked.connect(self.generate_mesh)
         button_layout.addWidget(window.generate_mesh_btn)
 
@@ -251,7 +252,7 @@ class MeshingPageUI:
             window.flux_stator_rout, window.flux_stator_rin,
             window.flux_num_slots, window.flux_slot_angle,
             window.flux_slot_height, window.flux_air_gap_thickness,
-            window.flux_shaft_radius, window.flux_num_pair_poles,
+            window.flux_shaft_radius, window.flux_num_poles,
         ]
         for field in input_fields:
             field.textChanged.connect(self._on_machine_params_changed)
@@ -340,7 +341,7 @@ class MeshingPageUI:
             if params['shaft_radius'] >= (params['stator_inner_radius']
                                           - params['air_gap']):
                 return False
-            if params['num_slots'] < 3:
+            if params['num_slots'] < 2:
                 return False
             if params['slot_angle'] >= (360 / params['num_slots']):
                 return False
@@ -361,7 +362,7 @@ class MeshingPageUI:
                 set_status(window.mesh_status,
                            "Error: Invalid machine parameters", 'error')
                 window.mesh_log.append(
-                    "ERROR: Please check machine parameters in Step 1")
+                    "ERROR: Please check parameters in Machine geometry (stage 03)")
                 return
 
             slot_pitch = 360 / machine_params['num_slots']
@@ -450,8 +451,10 @@ class MeshingPageUI:
                     f"  {region}: {count:,} ({percentage:.1f}%)")
 
     def _notify_navigation_changed(self):
-        """Tell the flux viewer to refresh its Next/Previous buttons."""
+        """Refresh the shared workflow navigation after a mesh change."""
         window = self.main_window
+        if hasattr(window, 'flux_density_page_ui'):
+            window.flux_density_page_ui.invalidate_animation()
         if hasattr(window, 'update_flux_navigation'):
             window.update_flux_navigation()
 
@@ -533,7 +536,7 @@ class MeshingPageUI:
             self.draw_base_machine()
 
     def _draw_mesh_overlay(self, r_divisions, theta_divisions, machine_params):
-        """Thin blue radial lines and red circles marking mesh divisions."""
+        """Neutral radial lines and circles marking mesh divisions."""
         ax = self.main_window.mesh_ax
         inner_radius = machine_params['shaft_radius']
         outer_radius = machine_params['stator_outer_radius']
@@ -544,14 +547,14 @@ class MeshingPageUI:
                      outer_radius * np.cos(theta_rad)],
                     [inner_radius * np.sin(theta_rad),
                      outer_radius * np.sin(theta_rad)],
-                    'b-', linewidth=MESH_OVERLAY_LINEWIDTH,
+                    color='#555555', linewidth=MESH_OVERLAY_LINEWIDTH,
                     alpha=MESH_OVERLAY_ALPHA)
 
         circle_angles = np.linspace(0, 2 * np.pi, 100)
         for radius in r_divisions:
             ax.plot(radius * np.cos(circle_angles),
                     radius * np.sin(circle_angles),
-                    'r-', linewidth=MESH_OVERLAY_LINEWIDTH,
+                    color='#333333', linewidth=MESH_OVERLAY_LINEWIDTH,
                     alpha=MESH_OVERLAY_ALPHA)
 
     # ---------------------------------------------------------------- export

@@ -10,7 +10,7 @@ import matplotlib.colors as colors
 import matplotlib.lines as mlines
 import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib.collections import PatchCollection
+from matplotlib.collections import PolyCollection
 from matplotlib.patches import Circle, Wedge
 
 from core.flux_contours import reconstruct_flux_potential
@@ -46,8 +46,8 @@ STREAMPLOT_KWARGS = dict(
 MATERIAL_COLORS = {
     'Rotor Core': '#777777',
     'Air Gap': '#E0E0E0',
-    'Tooth': '#4a90e2',
-    'Stator Core': '#4a90e2',
+    'Tooth': '#b8b8b8',
+    'Stator Core': '#b8b8b8',
     'Slot': '#FFFFFF',
 }
 
@@ -78,7 +78,7 @@ class FluxDensityVisualizer:
             return self._mesh_geometry_cache[cache_key]
 
         num_elements = len(mesh_elements)
-        patches = []
+        polar_cells = np.empty((num_elements, 4), dtype=np.float64)
         element_ids = []
         materials = []
         center_x = np.zeros(num_elements, dtype=np.float64)
@@ -94,8 +94,7 @@ class FluxDensityVisualizer:
 
             rin, rout = element['rin'], element['rout']
             theta_start, theta_end = element['theta_start'], element['theta_end']
-            patches.append(Wedge((0, 0), rout, theta_start, theta_end,
-                                 width=rout - rin))
+            polar_cells[idx] = (rin, rout, theta_start, theta_end)
 
             r_center = element.get('center_r', (rin + rout) * 0.5)
             theta_center = element.get('center_theta',
@@ -109,12 +108,22 @@ class FluxDensityVisualizer:
             center_x[idx] = r_center * cos_theta[idx]
             center_y[idx] = r_center * sin_theta[idx]
 
+        # Batch tessellation replaces one heavyweight Matplotlib Wedge per cell.
+        # Arcs are subdivided to at most one degree (subpixel chord error).
+        subdivisions = max(1, int(np.ceil(np.max(polar_cells[:, 3]-polar_cells[:, 2]))))
+        fraction = np.linspace(0, 1, subdivisions+1)
+        theta = np.radians(polar_cells[:, 2, None] +
+                           (polar_cells[:, 3]-polar_cells[:, 2])[:, None]*fraction)
+        outer = polar_cells[:, 1, None, None] * np.stack((np.cos(theta), np.sin(theta)), axis=-1)
+        inner = polar_cells[:, 0, None, None] * np.stack((np.cos(theta[:, ::-1]), np.sin(theta[:, ::-1])), axis=-1)
+        vertices = np.concatenate((outer, inner), axis=1)
+
         geometry = {
             # Keep the source alive while its id is used as a cache key.
             # Otherwise Python can reuse the id for a different mesh with
             # the same element count and return old coordinates/materials.
             '_mesh_elements_source': mesh_elements,
-            'patches': patches,
+            'vertices': vertices,
             'element_ids': element_ids,
             'materials': materials,
             'center_x': center_x,
@@ -333,12 +342,12 @@ class FluxDensityVisualizer:
         ax.set_aspect('equal')
         ax.set_xlim(-limit, limit)
         ax.set_ylim(-limit, limit)
-        ax.set_title(title, color='#243244', fontsize=11, pad=14)
-        ax.set_xlabel('x [mm]', color='#65758a', fontsize=9)
-        ax.set_ylabel('y [mm]', color='#65758a', fontsize=9)
-        ax.tick_params(colors='#65758a', which='both', labelsize=8, length=3)
+        ax.set_title(title, color='#292929', fontsize=11, pad=14)
+        ax.set_xlabel('x [mm]', color='#666666', fontsize=9)
+        ax.set_ylabel('y [mm]', color='#666666', fontsize=9)
+        ax.tick_params(colors='#666666', which='both', labelsize=8, length=3)
         for spine in ax.spines.values():
-            spine.set_color('#d9e1e9')
+            spine.set_color('#dddddd')
 
     @staticmethod
     def _clear_axis(ax, figure):
@@ -365,8 +374,8 @@ class FluxDensityVisualizer:
                     ax, figure, geometry, machine_params)
 
             num_elements = len(mesh_elements)
-            patch_collection = PatchCollection(
-                geometry['patches'],
+            patch_collection = PolyCollection(
+                geometry['vertices'],
                 linewidths=0.0, edgecolors='none', antialiaseds=False)
 
             patch_collection.set_array(b_values)
@@ -418,8 +427,8 @@ class FluxDensityVisualizer:
         self._clear_axis(ax, figure)
         geometry = self._get_mesh_geometry(mesh_elements)
         num_elements = len(mesh_elements)
-        collection = PatchCollection(
-            geometry['patches'],
+        collection = PolyCollection(
+            geometry['vertices'],
             linewidths=0.0, edgecolors='none', antialiaseds=False)
         collection.set_cmap(plt.cm.turbo)
         collection.set_array(np.zeros(num_elements, dtype=np.float64))
@@ -450,8 +459,8 @@ class FluxDensityVisualizer:
         color_list = [MATERIAL_COLORS.get(material, '#CCCCCC')
                       for material in geometry['materials']]
 
-        patch_collection = PatchCollection(
-            geometry['patches'], facecolors=color_list, edgecolors='black',
+        patch_collection = PolyCollection(
+            geometry['vertices'], facecolors=color_list, edgecolors='black',
             linewidths=0.15, alpha=0.8)
         ax.add_collection(patch_collection)
 
@@ -573,8 +582,8 @@ class FluxDensityVisualizer:
                     ax, figure, mesh_data, flux_densities, machine_params)
 
             num_elements = len(mesh_elements)
-            patch_collection = PatchCollection(
-                geometry['patches'],
+            patch_collection = PolyCollection(
+                geometry['vertices'],
                 linewidths=0.0, edgecolors='none', antialiaseds=False)
             patch_collection.set_array(b_values)
             patch_collection.set_cmap(plt.cm.turbo)
@@ -622,7 +631,7 @@ class FluxDensityVisualizer:
         if high - low <= max(abs(high), abs(low), 1e-30) * 1e-12:
             figure._flux_contour_info['count'] = 0
             ax.text(0.5, 0.5, 'Zero magnetic flux', transform=ax.transAxes,
-                    ha='center', va='center', color='#65758a', fontsize=10)
+                    ha='center', va='center', color='#666666', fontsize=10)
             return
 
         # Piecewise linear theta / log(r) interpolation preserves face fluxes
@@ -645,7 +654,7 @@ class FluxDensityVisualizer:
         y = radii[:, None] * np.sin(theta)
         x[:, -1], y[:, -1] = x[:, 0], y[:, 0]
         levels = np.linspace(low, high, count + 2)[1:-1]
-        ax.contour(x, y, values, levels=levels, colors='#162330', linewidths=0.7,
+        ax.contour(x, y, values, levels=levels, colors='#222222', linewidths=0.7,
                    linestyles='solid', antialiased=True, zorder=5)
 
     def _draw_geometry_edges(self, ax, machine_params):
@@ -653,7 +662,7 @@ class FluxDensityVisualizer:
         self.draw_machine_cross_section_background(ax, machine_params)
         for patch in list(ax.patches)[first_patch:]:
             patch.set_facecolor('none')
-            patch.set_edgecolor('#465361')
+            patch.set_edgecolor('#505050')
             patch.set_alpha(0.65)
             patch.set_linewidth(0.45)
             patch.set_zorder(6)
@@ -735,7 +744,7 @@ class FluxDensityVisualizer:
             ax.add_patch(Wedge(
                 (0, 0), stator_outer_radius, 0, 360,
                 width=max(0.1, stator_outer_radius - tooth_tip_radius),
-                facecolor="#e8edf2", edgecolor="#637284", alpha=1.0,
+                facecolor="#e9e9e9", edgecolor="#707070", alpha=1.0,
                 linewidth=0.8, zorder=0))
 
             for i in range(num_slots):
@@ -745,7 +754,7 @@ class FluxDensityVisualizer:
                         (0, 0), tooth_tip_radius, tooth_start,
                         tooth_start + tooth_angle,
                         width=max(0.1, tooth_tip_radius - stator_inner_radius),
-                        facecolor="#e8edf2", edgecolor="#637284", alpha=1.0,
+                        facecolor="#e9e9e9", edgecolor="#707070", alpha=1.0,
                         linewidth=0.6, zorder=0.2))
 
                 if slot_angle > 0:
@@ -761,13 +770,13 @@ class FluxDensityVisualizer:
                 ax.add_patch(Wedge(
                     (0, 0), stator_inner_radius, 0, 360,
                     width=max(0.1, stator_inner_radius - rotor_outer_radius),
-                    facecolor="#ffffff", edgecolor="#637284", alpha=1.0,
+                    facecolor="#ffffff", edgecolor="#707070", alpha=1.0,
                     linewidth=0.6, zorder=0.1))
 
             ax.add_patch(Wedge(
                 (0, 0), rotor_outer_radius, 0, 360,
                 width=max(0.1, rotor_outer_radius - shaft_radius),
-                facecolor="#e8edf2", edgecolor="#637284", alpha=1.0,
+                facecolor="#e9e9e9", edgecolor="#707070", alpha=1.0,
                 linewidth=0.8, zorder=0.15))
 
             ax.add_patch(Circle(

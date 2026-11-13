@@ -241,8 +241,9 @@ def run_femm_script(lua_path, results_path, timeout=300, *, keep_open=False):
         command = [executable, f'-lua-script={wrapper_path}', '-windowhide']
         backend = 'femm-exe'
     else:
-        command = [sys.executable, str(Path(__file__).resolve()),
-                   '--pyfemm-worker', str(wrapper_path)]
+        command = ([sys.executable] if getattr(sys, 'frozen', False) else
+                   [sys.executable, str(Path(__file__).resolve())])
+        command += ['--pyfemm-worker', str(wrapper_path)]
         if keep_open:
             command.append('--keep-open')
         backend = 'python-femm'

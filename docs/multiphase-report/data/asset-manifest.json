@@ -1,0 +1,128 @@
+{
+  "videos_verified": [
+    {
+      "slug": "three-phase-default",
+      "decoded_frames": 360,
+      "dark_background_checked": true,
+      "metadata": {
+        "ffmpeg_version": "9.0.2-essentials_build-www.gyan.dev built with gcc 16.2.0 (Rev3, Built by MSYS2 project)",
+        "codec": "h264",
+        "pix_fmt": "yuv420p(progressive)",
+        "fps": 30.0,
+        "source_size": [
+          1280,
+          720
+        ],
+        "size": [
+          1280,
+          720
+        ],
+        "rotate": 0,
+        "duration": 12.0
+      }
+    },
+    {
+      "slug": "five-phase-45s-8p-span11",
+      "decoded_frames": 360,
+      "dark_background_checked": true,
+      "metadata": {
+        "ffmpeg_version": "9.0.2-essentials_build-www.gyan.dev built with gcc 16.2.0 (Rev3, Built by MSYS2 project)",
+        "codec": "h264",
+        "pix_fmt": "yuv420p(progressive)",
+        "fps": 30.0,
+        "source_size": [
+          1280,
+          720
+        ],
+        "size": [
+          1280,
+          720
+        ],
+        "rotate": 0,
+        "duration": 12.0
+      }
+    }
+  ],
+  "assets": [
+    {
+      "file": "five-phase-45s-8p-span11-diagnostics.png",
+      "bytes": 188445,
+      "sha256": "f9be9121cf77b2f1688f033d3f4d8a2f0b976f2d91461bf8c9d0edfc79dfc64b"
+    },
+    {
+      "file": "five-phase-45s-8p-span11-field.png",
+      "bytes": 861972,
+      "sha256": "40b63e3651f28c22b800b4beac01a5d82f4052f80db806fc97ac77d362238fba"
+    },
+    {
+      "file": "five-phase-45s-8p-span11-flux.mp4",
+      "bytes": 4207577,
+      "sha256": "f7516a250ba75bd350b7109a051817df5074d34cad317485ee13727170656952"
+    },
+    {
+      "file": "five-phase-45s-8p-span11-mmf.png",
+      "bytes": 111208,
+      "sha256": "7de69ccfd1724c753bb6db4f4001bf013c1f1b6446549008d338901840fed325"
+    },
+    {
+      "file": "five-phase-45s-8p-span11-poster.jpg",
+      "bytes": 125341,
+      "sha256": "9e908f54f90dfcb86710948772da9023973a19d37191f346e90089353bf8db17"
+    },
+    {
+      "file": "five-phase-45s-8p-span11-rotation.png",
+      "bytes": 854962,
+      "sha256": "e78c60edf612127b4167779de73409255f2adfecefb85c92580f8b627cdf98f0"
+    },
+    {
+      "file": "three-phase-default-diagnostics.png",
+      "bytes": 207166,
+      "sha256": "0b94f0acac1db0f7ed6bafe7383bc1ec5cfabe98571ab248e7b715bf68310cb9"
+    },
+    {
+      "file": "three-phase-default-field.png",
+      "bytes": 1003271,
+      "sha256": "31862e9ac1303ee761140fd57c6693b09c866905cc05da43699a1e97d0a591c3"
+    },
+    {
+      "file": "three-phase-default-flux.mp4",
+      "bytes": 4598966,
+      "sha256": "889a8f197d55dce6dea943f4670bd52c27bf04f669e1847a6dbe2e74c1ae0183"
+    },
+    {
+      "file": "three-phase-default-mmf.png",
+      "bytes": 128256,
+      "sha256": "39703040af30d28609ef2377ba1e8a100d364f9e9619a8c36819b3456f027952"
+    },
+    {
+      "file": "three-phase-default-poster.jpg",
+      "bytes": 132851,
+      "sha256": "2b2e89b3dcf2f8fe0ea74ec0b0f09ba002e16079abff4d73ace5e1c63adf55b1"
+    },
+    {
+      "file": "three-phase-default-rotation.png",
+      "bytes": 995409,
+      "sha256": "6961a0c9ba1a59bf263e9a8223b4bb5d649b833ff48b0ba77283a127275aabfb"
+    },
+    {
+      "file": "two-phase-diagnostics.png",
+      "bytes": 193821,
+      "sha256": "0c0d230faebcdaf41982c623d9eda7a75c243d3b35ea5d5a70047b7cccfd04a3"
+    },
+    {
+      "file": "two-phase-field.png",
+      "bytes": 950038,
+      "sha256": "212a8f72e8497c37b88a16b9e6d0e54cccf8aa59d098f0e49daa2abc963914b6"
+    },
+    {
+      "file": "two-phase-mmf.png",
+      "bytes": 95477,
+      "sha256": "75cc5733f3bbd4d001184ad00b7280ace37d3a3d396bdb21ce5cbfc4b9ec8e2c"
+    },
+    {
+      "file": "two-phase-rotation.png",
+      "bytes": 939033,
+      "sha256": "2144a04276d8b7bb11125ee05e7c6936182902f339e50d2fe2921cdd474b2533"
+    }
+  ]
+}

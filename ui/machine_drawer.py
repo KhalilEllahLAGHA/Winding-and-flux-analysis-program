@@ -5,7 +5,7 @@ from matplotlib.patches import Circle, Wedge
 
 from utils.constants import DEFAULT_MACHINE_PARAMS
 
-STATOR_COLOR = "#4a90e2"
+STATOR_COLOR = "#b8b8b8"
 ROTOR_COLOR = "#666666"
 AIR_GAP_COLOR = "#CCCCCC"
 

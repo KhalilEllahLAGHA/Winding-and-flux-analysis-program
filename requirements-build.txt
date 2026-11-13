@@ -1,0 +1,4 @@
+-r requirements.txt
+pyinstaller==6.22.3
+pyfemm==0.1.3
+pywin32==312; sys_platform == 'win32'

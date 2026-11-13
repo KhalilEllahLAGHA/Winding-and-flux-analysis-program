@@ -3,9 +3,9 @@
 import logging
 
 import matplotlib.pyplot as plt
-from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
-from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtWidgets import (QFormLayout, QFrame, QGroupBox, QHBoxLayout, QLabel,
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtWidgets import (QFormLayout, QFrame, QGroupBox, QHBoxLayout, QLabel,
                              QLineEdit, QPushButton, QScrollArea, QVBoxLayout,
                              QWidget)
 
@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 REDRAW_DEBOUNCE_MS = 300
 # Tolerance when echoing slot-arc values between tabs (avoids signal loops
 # caused by float round-tripping through the text field).
-SLOT_ARC_SYNC_EPSILON = 0.01
+SLOT_ARC_SYNC_EPSILON = 1e-9
 
 
 class MotorDrawingPageUI:
@@ -34,7 +34,7 @@ class MotorDrawingPageUI:
         widget = QWidget()
         widget.setStyleSheet(MOTOR_INPUT_PAGE_STYLE)
 
-        # Keep this controller alive on the main window. PyQt5 only holds
+        # Keep this controller alive on the main window. PyQt6 only holds
         # weak references to bound-method slots, so without this the page
         # object is garbage collected and every textChanged->redraw
         # connection silently dies (the preview then never updates).
@@ -46,16 +46,17 @@ class MotorDrawingPageUI:
         inputs = QWidget()
         inputs.setLayout(self._build_input_panel())
         sidebar = QScrollArea()
+        sidebar.setObjectName('studySettings')
         sidebar.setWidgetResizable(True)
-        sidebar.setFrameShape(QFrame.NoFrame)
-        sidebar.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        sidebar.setMinimumWidth(320)
-        sidebar.setMaximumWidth(350)
+        sidebar.setFrameShape(QFrame.Shape.NoFrame)
+        sidebar.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        sidebar.setMinimumWidth(300)
+        sidebar.setMaximumWidth(320)
         sidebar.setWidget(inputs)
         main_layout.addWidget(sidebar)
         drawing = QFrame()
         drawing.setObjectName('machinePlotSurface')
-        drawing.setStyleSheet('QFrame#machinePlotSurface { background: white; border: 1px solid #cfd7e2; border-radius: 9px; }')
+        drawing.setStyleSheet('QFrame#machinePlotSurface { background: white; border: 1px solid #dedede; border-radius: 9px; }')
         drawing_layout = QVBoxLayout(drawing)
         drawing_layout.setContentsMargins(4, 4, 4, 4)
         drawing_layout.addWidget(self._build_drawing_canvas())
@@ -79,14 +80,14 @@ class MotorDrawingPageUI:
         left_panel.setContentsMargins(0, 0, 5, 0)
         left_panel.setSpacing(10)
 
-        title = QLabel("Machine geometry")
+        title = QLabel("Geometry settings")
         title.setStyleSheet(PAGE_TITLE_STYLE)
         heading = QHBoxLayout()
         heading.addWidget(title)
         heading.addStretch()
         left_panel.addLayout(heading)
 
-        subtitle = QLabel("Set the machine dimensions and inspect the cross-section.")
+        subtitle = QLabel("All dimensions are in millimetres unless stated.")
         subtitle.setStyleSheet(PAGE_SUBTITLE_STYLE)
         subtitle.setWordWrap(True)
         left_panel.addWidget(subtitle)
@@ -130,19 +131,18 @@ class MotorDrawingPageUI:
         winding_layout.setContentsMargins(10, 10, 10, 10)
 
         window.flux_num_slots = QLineEdit(str(defaults['num_slots']))
-        window.flux_num_pair_poles = QLineEdit(str(DEFAULT_PAIR_POLES))
+        window.flux_num_poles = QLineEdit(str(DEFAULT_PAIR_POLES * 2))
 
         window.flux_num_slots.setToolTip(
             "Number of stator slots. Kept in sync with the Winding Simulator "
             "tab; changing it also recomputes the default slot angle.")
-        window.flux_num_pair_poles.setToolTip(
-            "Number of pole pairs. Kept in sync with the Winding Simulator tab.")
+        window.flux_num_poles.setToolTip(
+            "Total pole count (an even number). Kept in sync with the Winding Simulator tab.")
 
         winding_layout.addRow("Slots", window.flux_num_slots)
-        winding_layout.addRow("Pole pairs", window.flux_num_pair_poles)
+        winding_layout.addRow("Poles", window.flux_num_poles)
 
-        sync_note = QLabel("Slots, poles, and slot angle stay in sync with "
-                           "the other tabs.")
+        sync_note = QLabel("Slots, poles and slot angle are shared with the winding and MMF settings.")
         sync_note.setStyleSheet(PAGE_SUBTITLE_STYLE)
         sync_note.setWordWrap(True)
 
@@ -180,7 +180,7 @@ class MotorDrawingPageUI:
             window.flux_stator_rout, window.flux_stator_rin,
             window.flux_num_slots, window.flux_slot_angle,
             window.flux_slot_height, window.flux_air_gap_thickness,
-            window.flux_shaft_radius, window.flux_num_pair_poles,
+            window.flux_shaft_radius, window.flux_num_poles,
         ]
 
     def _connect_inputs_to_redraw(self):
@@ -210,22 +210,24 @@ class MotorDrawingPageUI:
         window.slots_spin.valueChanged.connect(
             lambda value: window.flux_num_slots.setText(str(value)))
         window.poles_spin.valueChanged.connect(
-            lambda value: window.flux_num_pair_poles.setText(str(value)))
+            lambda value: window.flux_num_poles.setText(str(value)))
 
         window.flux_num_slots.textChanged.connect(self._update_winding_tab_slots)
-        window.flux_num_pair_poles.textChanged.connect(
-            self._update_winding_tab_pair_poles)
+        window.flux_num_poles.textChanged.connect(
+            self._update_winding_tab_poles)
 
         window.flux_num_slots.setText(str(window.slots_spin.value()))
-        window.flux_num_pair_poles.setText(str(window.poles_spin.value()))
+        window.flux_num_poles.setText(str(window.poles_spin.value()))
+        window.flux_num_poles.editingFinished.connect(
+            lambda: window.flux_num_poles.setText(str(window.poles_spin.value())))
 
-    def _update_winding_tab_pair_poles(self, text):
+    def _update_winding_tab_poles(self, text):
         window = self.main_window
         try:
             value = int(text)
         except ValueError:
             return
-        if value != window.poles_spin.value():
+        if value >= 2 and value % 2 == 0 and value != window.poles_spin.value():
             window.poles_spin.setValue(value)
 
     def _update_winding_tab_slots(self, text):
@@ -273,7 +275,7 @@ class MotorDrawingPageUI:
         num_slots = parse_int_field(window.flux_num_slots.text(), fallback=0)
         if num_slots <= 0:
             num_slots = DEFAULT_MACHINE_PARAMS['num_slots']
-        window.flux_slot_angle.setText(f"{default_slot_arc_deg(num_slots):.2f}")
+        window.flux_slot_angle.setText(f"{default_slot_arc_deg(num_slots):.8f}".rstrip('0').rstrip('.'))
 
     def reset_to_default(self):
         window = self.main_window
@@ -285,9 +287,9 @@ class MotorDrawingPageUI:
         window.flux_shaft_radius.setText(str(defaults['shaft_radius']))
         window.flux_slot_height.setText(str(defaults['slot_height']))
         window.flux_num_slots.setText(str(defaults['num_slots']))
-        window.flux_num_pair_poles.setText(str(DEFAULT_PAIR_POLES))
+        window.flux_num_poles.setText(str(DEFAULT_PAIR_POLES * 2))
         window.flux_slot_angle.setText(
-            f"{default_slot_arc_deg(defaults['num_slots']):.2f}")
+            f"{default_slot_arc_deg(defaults['num_slots']):.8f}".rstrip('0').rstrip('.'))
 
         self.draw_flux_machine()
 

@@ -11,12 +11,12 @@ import numpy as np
 MU0 = 4 * np.pi * 1e-7  # Permeability of free space [H/m]
 GRID_FREQUENCY_HZ = 50  # Mains frequency used for synchronous-speed estimates
 
-# --- Three-phase winding ---------------------------------------------------
+# --- Default winding -------------------------------------------------------
 PHASES = ('A', 'B', 'C')
 PHASE_COUNT = len(PHASES)
 
 DEFAULT_NUM_SLOTS = 36
-SLOT_COUNT_RANGE = (6, 72)
+SLOT_COUNT_RANGE = (2, 72)
 DEFAULT_PAIR_POLES = 2
 
 DEFAULT_TURNS = 204

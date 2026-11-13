@@ -5,38 +5,64 @@ colors, radii, and interactive states (hover / focus / pressed / disabled)
 stay consistent across the whole application.
 
 Conventions used by the pages:
-  - ``btn.setObjectName("primaryButton")`` promotes a button to the accent
+  - ``btn.setObjectName("primaryButton")`` promotes a button to the primary
     (primary action) style.
-  - ``set_status(label, text, kind)`` renders color-coded feedback lines
+  - ``set_status(label, text, kind)`` renders neutral feedback lines
     (kind: muted / info / success / warning / error).
   - ``badge_style(kind)`` returns a tinted "chip" style for QLabels.
 """
 
+from PyQt6.QtGui import QColor, QPalette
+from pathlib import Path
+
+_ASSETS = Path(__file__).resolve().with_name('assets')
+
 # --- Design tokens -----------------------------------------------------------
 
-# Background layers (darkest -> lightest).
-BG_WINDOW = "#15191f"     # page background
-BG_SURFACE = "#1d232c"    # cards, group boxes, bars
-BG_INPUT = "#252e39"      # editable fields and buttons
-BG_HOVER = "#303d4c"      # hover fill
-BG_PRESSED = "#10141a"    # pressed fill
+# Dark neutral surfaces. White backgrounds are reserved for image/plot canvases.
+BG_WINDOW = "#141414"
+BG_SURFACE = "#1e1e1e"
+BG_INPUT = "#282828"
+BG_HOVER = "#353535"
+BG_PRESSED = "#101010"
 
-BORDER = "#3b4756"
-BORDER_SOFT = "#303a47"
+BORDER = "#505050"
+BORDER_SOFT = "#353535"
 
-TEXT = "#e9edf3"
-TEXT_DIM = "#a2afbf"
-TEXT_FAINT = "#718094"
+TEXT = "#eeeeee"
+TEXT_DIM = "#b8b8b8"
+TEXT_FAINT = "#999999"
 
-ACCENT = "#4f8cff"
-ACCENT_HOVER = "#6ba1ff"
-ACCENT_PRESSED = "#3a72d8"
+ACCENT = "#5389db"
+ACCENT_HOVER = "#6b9be2"
+ACCENT_PRESSED = "#3b6db5"
 
-SUCCESS = "#49c6b1"
-WARNING = "#f0b429"
-DANGER = "#ff6b6b"
+SUCCESS = "#81c6a7"
+WARNING = "#e0bb71"
+DANGER = "#ea9898"
 
 FONT_FAMILY = '"Segoe UI", "Helvetica Neue", Arial, sans-serif'
+
+
+def dark_palette():
+    """Keep native popups, spin arrows and plot toolbar icons in the same theme."""
+    palette = QPalette()
+    for role, color in {
+        QPalette.ColorRole.Window: BG_WINDOW, QPalette.ColorRole.WindowText: TEXT,
+        QPalette.ColorRole.Base: BG_INPUT, QPalette.ColorRole.AlternateBase: BG_SURFACE,
+        QPalette.ColorRole.Text: TEXT, QPalette.ColorRole.Button: BG_INPUT,
+        QPalette.ColorRole.ButtonText: TEXT, QPalette.ColorRole.BrightText: TEXT,
+        QPalette.ColorRole.ToolTipBase: BG_INPUT, QPalette.ColorRole.ToolTipText: TEXT,
+        QPalette.ColorRole.Highlight: ACCENT, QPalette.ColorRole.HighlightedText: '#ffffff',
+        QPalette.ColorRole.Light: '#616161', QPalette.ColorRole.Midlight: '#3a3a3a',
+        QPalette.ColorRole.Mid: '#383838', QPalette.ColorRole.Dark: '#101010',
+        QPalette.ColorRole.Shadow: '#000000', QPalette.ColorRole.Link: TEXT,
+        QPalette.ColorRole.LinkVisited: TEXT_DIM,
+    }.items():
+        palette.setColor(role, QColor(color))
+    for role in (QPalette.ColorRole.Text, QPalette.ColorRole.WindowText, QPalette.ColorRole.ButtonText):
+        palette.setColor(QPalette.ColorGroup.Disabled, role, QColor(TEXT_FAINT))
+    return palette
 
 # --- Fragments ---------------------------------------------------------------
 
@@ -171,6 +197,7 @@ _LINE_EDIT = f"""
         font-size: 13px;
         min-width: 54px;
         selection-background-color: {ACCENT};
+        selection-color: #ffffff;
     }}
 
     QLineEdit:hover {{
@@ -191,17 +218,18 @@ _LINE_EDIT = f"""
 
 
 def _spin_box_rules(selector):
-    """Dark style block for QSpinBox-like widgets."""
+    """Neutral style block for QSpinBox-like widgets."""
     return f"""
     {selector} {{
         background-color: {BG_INPUT};
         color: {TEXT};
         border: 1px solid {BORDER};
-        padding: 6px 8px;
+        padding: 6px 22px 6px 8px;
         border-radius: 6px;
         font-size: 13px;
         min-width: 54px;
         selection-background-color: {ACCENT};
+        selection-color: #ffffff;
     }}
 
     {selector}:hover {{
@@ -210,13 +238,30 @@ def _spin_box_rules(selector):
 
     {selector}:focus {{
         border: 1px solid {ACCENT};
-        background-color: {BG_HOVER};
+        background-color: {BG_INPUT};
     }}
 
     {selector}:disabled {{
         background-color: {BG_SURFACE};
         color: {TEXT_FAINT};
         border: 1px solid {BORDER_SOFT};
+    }}
+
+    {selector}::up-button, {selector}::down-button {{
+        subcontrol-origin: border;
+        width: 18px;
+        border-left: 1px solid {BORDER};
+        background: {BG_INPUT};
+    }}
+    {selector}::up-button {{ subcontrol-position: top right; }}
+    {selector}::down-button {{ subcontrol-position: bottom right; }}
+    {selector}::up-arrow {{
+        image: url("{(_ASSETS / 'chevron-up.svg').as_posix()}");
+        width: 10px; height: 7px;
+    }}
+    {selector}::down-arrow {{
+        image: url("{(_ASSETS / 'chevron-down.svg').as_posix()}");
+        width: 10px; height: 7px;
     }}
 
 """
@@ -306,10 +351,11 @@ _CHECK_BOX = f"""
     QCheckBox::indicator:checked {{
         background-color: {ACCENT};
         border: 1px solid {ACCENT};
+        image: url("{(_ASSETS / 'check.svg').as_posix()}");
     }}
 
     QCheckBox:focus, QRadioButton:focus {{
-        outline: 1px solid {ACCENT};
+        color: {ACCENT};
     }}
 
     QCheckBox:disabled {{
@@ -341,7 +387,7 @@ _RADIO_BUTTON = f"""
 
     QRadioButton::indicator:checked {{
         border: 5px solid {ACCENT};
-        background-color: #ffffff;
+        background-color: {BG_SURFACE};
     }}
 
     QRadioButton:disabled {{
@@ -387,7 +433,7 @@ _SCROLL_BARS = f"""
 
 _TEXT_EDIT = f"""
     QTextEdit {{
-        background-color: {BG_PRESSED};
+        background-color: {BG_INPUT};
         color: {TEXT_DIM};
         border: 1px solid {BORDER_SOFT};
         border-radius: 6px;
@@ -395,6 +441,7 @@ _TEXT_EDIT = f"""
         font-size: 11px;
         padding: 4px;
         selection-background-color: {ACCENT};
+        selection-color: #ffffff;
     }}
 """
 
@@ -443,11 +490,11 @@ def _tab_bar_rules(tab_extras=""):
 """
 
 
-# Light styling for the matplotlib navigation toolbar (sits on white canvases).
+# Plot controls use dark surfaces; the canvas itself keeps a white background.
 _MATPLOTLIB_TOOLBAR = """
     QToolBar {
-        background-color: #f4f6f8;
-        border: 1px solid #d7dce1;
+        background-color: #242424;
+        border: 1px solid #454545;
         border-radius: 6px;
         spacing: 2px;
         padding: 1px;
@@ -455,7 +502,7 @@ _MATPLOTLIB_TOOLBAR = """
 
     QToolBar QToolButton {
         background-color: transparent;
-        color: #333333;
+        color: #eeeeee;
         border: 1px solid transparent;
         border-radius: 4px;
         padding: 3px;
@@ -464,22 +511,22 @@ _MATPLOTLIB_TOOLBAR = """
     }
 
     QToolBar QToolButton:hover {
-        background-color: #e2ecfb;
-        border: 1px solid #4c8dff;
+        background-color: #383838;
+        border: 1px solid #888888;
     }
 
     QToolBar QToolButton:pressed {
-        background-color: #cbdffa;
+        background-color: #181818;
     }
 
     QToolBar QToolButton:checked {
-        background-color: #4c8dff;
+        background-color: #505050;
         color: #ffffff;
-        border: 1px solid #3a72d8;
+        border: 1px solid #222222;
     }
 
     QToolBar QLabel {
-        color: #333333;
+        color: #eeeeee;
         background-color: transparent;
         font-size: 11px;
         padding: 2px;
@@ -488,15 +535,47 @@ _MATPLOTLIB_TOOLBAR = """
 
 # --- Page-level styles --------------------------------------------------------
 
-# Whole-window style (set once on the main window). Top-level tabs are wide
-# underlined headers; shared widget rules cover the MMF tab which has no
-# page-level stylesheet of its own.
+# Whole-window style. The sidebar replaces top-level tabs; small page-level
+# tabs still group related settings. Scientific plots retain their data colours.
 MAIN_WINDOW_STYLE = (
     _BASE + _BUTTONS + _GROUP_BOX + _CHECK_BOX + _RADIO_BUTTON + _SPIN_BOXES
     + _LINE_EDIT + _COMBO_BOX + _SCROLL_BARS + _MATPLOTLIB_TOOLBAR + f"""
     QTabWidget::pane {{
         border: none;
         background-color: {BG_WINDOW};
+    }}
+
+    QFrame#stageNavigation {{
+        background-color: {BG_SURFACE};
+        border-bottom: 1px solid {BORDER_SOFT};
+    }}
+    QPushButton#workflowNavButton {{
+        background-color: {BG_INPUT};
+        color: {TEXT_DIM};
+        border: 1px solid {BORDER_SOFT};
+        border-radius: 5px;
+        font-size: 12px;
+        padding: 0 10px;
+        min-width: 0;
+    }}
+    QPushButton#workflowNavButton:hover {{
+        background-color: {BG_HOVER};
+        color: {TEXT};
+    }}
+    QPushButton#workflowNavButton:checked {{
+        background-color: #263a54;
+        color: #a8c9ff;
+        border: 1px solid {ACCENT};
+        font-weight: 700;
+    }}
+    QPushButton#workflowNavButton:disabled {{
+        color: #888888;
+        background-color: {BG_WINDOW};
+    }}
+    QLabel#workspaceTitle {{
+        color: {TEXT};
+        font-size: 18px;
+        font-weight: 600;
     }}
 
     QTabBar::tab {{
@@ -534,11 +613,6 @@ FLUX_VIEWER_TAB_STYLE = (
         background-color: {BG_WINDOW};
     }}
 
-    QFrame#fluxStepHeader, QFrame#fluxNavBar {{
-        background-color: {BG_SURFACE};
-        border: 1px solid {BORDER_SOFT};
-        border-radius: 8px;
-    }}
 """
 )
 
@@ -561,7 +635,7 @@ FLUX_DENSITY_PAGE_STYLE = (
     + _MATPLOTLIB_TOOLBAR
 )
 
-# Connection-matrix dialog (dark table + slim scrollbars).
+# Connection-matrix dialog.
 MATRIX_DIALOG_STYLE = _SCROLL_BARS + f"""
     QDialog {{
         background-color: {BG_WINDOW};
@@ -621,16 +695,16 @@ _STATUS_COLORS = {
 
 # (text color, tinted background) per badge kind.
 _BADGE_TINTS = {
-    'muted': (TEXT_DIM, "rgba(154, 164, 178, 26)"),
-    'info': (ACCENT_HOVER, "rgba(76, 141, 255, 30)"),
-    'success': (SUCCESS, "rgba(73, 198, 177, 24)"),
-    'warning': (WARNING, "rgba(240, 180, 41, 30)"),
-    'error': (DANGER, "rgba(255, 107, 107, 30)"),
+    'muted': (TEXT_DIM, '#282828'),
+    'info': (TEXT_DIM, '#282828'),
+    'success': (SUCCESS, '#303030'),
+    'warning': (WARNING, '#303030'),
+    'error': (DANGER, '#383838'),
 }
 
 
 def set_status(label, text, kind='muted'):
-    """Show color-coded status feedback on a QLabel."""
+    """Show neutral status feedback; the message carries the state."""
     label.setText(text)
     label.setStyleSheet(
         f"color: {_STATUS_COLORS.get(kind, TEXT_FAINT)};"
@@ -645,46 +719,3 @@ def badge_style(kind='muted'):
         f"color: {color}; background-color: {tint};"
         f"border: 1px solid {color}; border-radius: 5px;"
         "padding: 6px 10px; font-weight: 600; font-size: 12px;")
-
-
-# --- Step indicator (Flux Viewer wizard header) ----------------------------------
-
-_STEP_BADGE_BASE = (
-    "border-radius: 14px; font-weight: 700; font-size: 13px;"
-)
-
-
-def step_badge_style(state):
-    """Circular number badge for one wizard step.
-
-    state: 'active' (current step), 'done' (completed), or 'todo'.
-    """
-    if state == 'active':
-        return (_STEP_BADGE_BASE
-                + f"background-color: {ACCENT}; color: #ffffff;"
-                  f"border: 1px solid {ACCENT};")
-    if state == 'done':
-        return (_STEP_BADGE_BASE
-                + "background-color: rgba(73, 198, 177, 24);"
-                  f"color: {SUCCESS}; border: 1px solid {SUCCESS};")
-    return (_STEP_BADGE_BASE
-            + f"background-color: transparent; color: {TEXT_FAINT};"
-              f"border: 1px solid {BORDER};")
-
-
-def step_title_style(state):
-    """Step name next to its badge."""
-    if state == 'active':
-        return (f"color: {TEXT}; font-size: 13px; font-weight: 700;"
-                "background: transparent;")
-    if state == 'done':
-        return (f"color: {SUCCESS}; font-size: 13px; font-weight: 600;"
-                "background: transparent;")
-    return (f"color: {TEXT_FAINT}; font-size: 13px;"
-            "background: transparent;")
-
-
-def step_connector_style(done):
-    """Thin line between steps; lights up once the step before it is done."""
-    color = SUCCESS if done else BORDER_SOFT
-    return f"background-color: {color}; border: none; border-radius: 1px;"

@@ -1,10 +1,10 @@
-"""Winding feasibility checks, winding factors, and the explanatory report
-shown in the Winding Simulator tab."""
+"""Dolomites feasibility, winding factors, and legacy report helpers."""
 
 import math
 from fractions import Fraction
 
-from core.connection_matrix import build_winding_connection_matrix
+from core.connection_matrix import build_winding_connection_matrix, effective_coil_span
+from utils.phases import phase_names
 from utils.constants import GRID_FREQUENCY_HZ, PHASE_COUNT
 
 # Heuristic thresholds used by the report recommendations.
@@ -13,32 +13,23 @@ HIGH_SLOT_COUNT_THRESHOLD = 48
 LOW_TORQUE_RIPPLE_SLOT_FACTOR = 6
 
 
-def slots_per_pole_per_phase(slots, poles):
-    """Return q = slots / (3 * poles) as an exact fraction."""
-    return Fraction(slots, PHASE_COUNT * poles)
+def slots_per_pole_per_phase(slots, poles, phase_count=3):
+    """Return q = slots / (phases * poles) as an exact fraction."""
+    return Fraction(slots, phase_count * poles)
 
 
-def check_winding_feasibility(slots, poles):
-    """Validate a slot/pole combination for a balanced three-phase winding.
-
-    Returns (feasible, messages, q) where messages explains each violation.
-    """
-    q = slots_per_pole_per_phase(slots, poles)
-    messages = []
-
-    if slots % 2 != 0:
-        messages.append("- Number of slots must be even")
-
-    if (slots * poles) % PHASE_COUNT != 0:
-        messages.append("- Configuration doesn't allow balanced three-phase winding")
-
-    if float(q) < MIN_SLOTS_PER_POLE_PER_PHASE:
-        messages.append("- Slots per pole per phase too low")
-
-    return not messages, messages, q
+def check_winding_feasibility(slots, poles, phase_count=3, is_double_layer=True, coil_span=None):
+    """Use the actual Dolomites generator, rather than three-phase heuristics."""
+    q = slots_per_pole_per_phase(slots, poles, phase_count)
+    try:
+        build_winding_connection_matrix(slots, poles, is_double_layer, coil_span,
+                                         phase_names(phase_count))
+    except ValueError as error:
+        return False, [str(error)], q
+    return True, [], q
 
 
-def calculate_winding_factors(slots, poles, coil_span, is_double_layer=True):
+def calculate_winding_factors(slots, poles, coil_span, is_double_layer=True, phase_count=3):
     """Working-harmonic factors of the actual equal-turn coil layout.
 
     Electrical slot angle is pi*poles/slots. The normalized signed-conductor
@@ -48,6 +39,7 @@ def calculate_winding_factors(slots, poles, coil_span, is_double_layer=True):
     """
     factors = {'distribution': None, 'pitch': None, 'skew': 1.0, 'total': None}
     try:
+        coil_span = effective_coil_span(slots, poles, is_double_layer, coil_span)
         slot_angle = math.pi * poles / slots
         if not math.isfinite(slot_angle) or slot_angle <= 0:
             raise ValueError('Slot and pole counts must be positive and finite.')
@@ -56,7 +48,7 @@ def calculate_winding_factors(slots, poles, coil_span, is_double_layer=True):
             kp = 0.0
         factors['pitch'] = kp
         matrix = build_winding_connection_matrix(
-            slots, poles, is_double_layer, coil_span)
+            slots, poles, is_double_layer, coil_span, phase_names(phase_count))
     except (ValueError, TypeError, ZeroDivisionError, OverflowError) as error:
         factors['error'] = str(error)
         return factors
@@ -65,19 +57,19 @@ def calculate_winding_factors(slots, poles, coil_span, is_double_layer=True):
                     for slot in range(slots)]
     phasors = [complex(math.cos(angle), -math.sin(angle))
                for angle in phase_angles]
-    complete = matrix[:3] + matrix[3:] if is_double_layer else matrix
-    counts = abs(matrix[:3]).sum(axis=1)
+    complete = matrix[:phase_count] + matrix[phase_count:] if is_double_layer else matrix
+    counts = abs(matrix[:phase_count]).sum(axis=1)
     if is_double_layer:
-        counts += abs(matrix[3:]).sum(axis=1)
+        counts += abs(matrix[phase_count:]).sum(axis=1)
     kw = math.fsum(abs(sum(value * phasor for value, phasor in zip(row, phasors)))
-                   / count for row, count in zip(complete, counts)) / PHASE_COUNT
+                   / count for row, count in zip(complete, counts)) / phase_count
     if kp:
         kd = kw / kp
     else:
         # A full electrical-period double-layer span cancels all excitation,
         # but the distribution of its coil starts is still well defined.
         kd = math.fsum(abs(sum(value * phasor for value, phasor in zip(row, phasors)))
-                       / abs(row).sum() for row in matrix[:3]) / PHASE_COUNT
+                       / abs(row).sum() for row in matrix[:phase_count]) / phase_count
         kw = 0.0
     factors.update(distribution=min(1.0, kd), total=min(1.0, kw))
     return factors
