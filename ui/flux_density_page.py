@@ -30,7 +30,7 @@ from core.femm_validation import (airgap_profile, airgap_samples,
                                   compute_reference_metrics)
 from core.reluctance_calculator import ReluctanceCalculator
 from core.teeth_slot_mmf import TeethSlotMMFCalculator
-from ui.flux_visualization import (generate_flux_density_heatmap,
+from ui.flux_visualization import (DEFAULT_CONTOUR_COUNT, generate_flux_density_heatmap,
                                    generate_flux_line_density_visualisation,
                                    generate_flux_lines_visualisation,
                                    setup_heatmap_animation)
@@ -217,7 +217,7 @@ class FluxDensityHeatmapUI:
         display_controls.addWidget(QLabel("Contours"))
         window.flux_contour_count = QSpinBox()
         window.flux_contour_count.setRange(4, 100)
-        window.flux_contour_count.setValue(36)
+        window.flux_contour_count.setValue(DEFAULT_CONTOUR_COUNT)
         window.flux_contour_count.setToolTip(
             'Equally spaced magnetic vector-potential contours. '
             'Each interval represents the same magnetic flux.')
@@ -815,7 +815,7 @@ class FluxDensityHeatmapUI:
                      branch_fluxes, machine_params):
         """Dispatch one visualisation mode onto the given axis."""
         count_control = getattr(self.main_window, 'flux_contour_count', None)
-        contour_count = count_control.value() if count_control is not None else 36
+        contour_count = count_control.value() if count_control is not None else DEFAULT_CONTOUR_COUNT
         if mode == "Flux Lines":
             return generate_flux_lines_visualisation(
                 ax, figure, mesh_data, branch_fluxes, machine_params,
