@@ -97,10 +97,9 @@ field in both models.
 
 ## Reproduction and evidence
 
-Run the focused physics and application regression checks from the project root.
+Reproduce the FEMM comparisons from the project root.
 
 ```powershell
-.venv/Scripts/python.exe -m unittest discover -s tests -v
 .venv/Scripts/python.exe tools/compare_femm_physics.py --preset high
 .venv/Scripts/python.exe tools/compare_femm_physics.py --preset mid --slot-angle 4 --span 6 --wt 28 --current 0.5
 ```

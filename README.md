@@ -72,12 +72,6 @@ their usual automatic-close behavior unless `--keep-open` is requested.
 The console stays hidden initially so the field map and point readout remain
 visible; open **View → Lua Console** to see the saved metrics.
 
-Regression checks (no FEMM installation required):
-
-```powershell
-.venv/Scripts/python.exe -m unittest discover -s tests -v
-```
-
 The 12 November 2026 physics audit corrected field reconstruction, coil returns,
 slot indexing and distributed winding sources. The default mid-mesh peak radial
 B difference is now about 0.067%. Signed curve comparisons retain the remaining

@@ -34,12 +34,6 @@ assessed separately from the algebraic solver residual.
 
 ## Verification
 
-Run the regression suite with:
-
-```powershell
-.venv/Scripts/python.exe -m unittest discover -s tests -v
-```
-
 The [physics audit](femm_validation/physics-audit.md) documents the field
 equations, winding-source conventions, FEMM comparisons and mesh-convergence
 results. Validation runs retain their models, solutions and metrics under
