@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 import numpy as np
 from scipy.sparse import csr_matrix
+from scipy.sparse.linalg import cg as scipy_cg
 
 from core.flux_solver import FluxCalculator, OPPOSITE_DIRECTION
 from core.meshing_engine import MeshingEngine
@@ -191,14 +192,76 @@ class NetworkConservationTests(TestCase):
             with self.assertRaisesRegex(RuntimeError, 'did not converge'):
                 solver._solve_linear_system(matrix, np.array([1.0, -1.0]), 1e-6)
 
+    def test_reduced_cg_success_is_refined_when_reference_residual_exceeds_limit(self):
+        # A balanced star network makes the reference-node amplification
+        # explicit. Interior residuals satisfy CG's relative 1e-6 target,
+        # while the full relative residual is 1.152e-5.
+        n = 133
+        array = np.eye(n)
+        array[0, 0] = n - 1
+        array[0, 1:] = -1
+        array[1:, 0] = -1
+        matrix = csr_matrix(array)
+        exact = np.concatenate(([0.0], np.tile([1.0, -1.0], (n - 1) // 2)))
+        rhs = matrix @ exact
+        initial = exact[1:] + 0.999e-6
+        full_initial = np.concatenate(([0.0], initial))
+        relative = np.linalg.norm(matrix @ full_initial - rhs) / np.linalg.norm(rhs)
+        self.assertAlmostEqual(relative, 1.1521035e-5, delta=1e-11)
+        calls = []
+
+        def reduced_success_then_refine(reduced, reduced_rhs, **kwargs):
+            calls.append(kwargs)
+            if len(calls) == 1:
+                return initial.copy(), 0
+            return scipy_cg(reduced, reduced_rhs, **kwargs)
+
+        solver = FluxCalculator()
+        with patch('core.flux_solver.cg', side_effect=reduced_success_then_refine), \
+                self.assertLogs('core.flux_solver', level='INFO') as log:
+            result, info = solver._solve_linear_system(matrix, rhs, 1e-6)
+        self.assertEqual(info, 0)
+        self.assertEqual(len(calls), 2)
+        np.testing.assert_array_equal(calls[1]['x0'], initial)
+        self.assertEqual(calls[1]['rtol'], 0)
+        self.assertGreater(calls[1]['atol'], 0)
+        self.assertEqual(solver._solver_refinement_steps, 1)
+        np.testing.assert_allclose(result, exact, atol=1e-12)
+        self.assertLess(solver._solver_relative_residual, 1e-10)
+        self.assertIn('refined successfully', log.output[0])
+        self.assertTrue(all('ERROR' not in line for line in log.output))
+
+    def test_medium_mesh_at_113_degrees_passes_full_network_residual_check(self):
+        from core.connection_matrix import build_winding_connection_matrix
+        from core.mmf_engine import MMFCalculationEngine
+        from core.teeth_slot_mmf import TeethSlotMMFCalculator
+        from utils.constants import DEFAULT_RELATIVE_PERMEABILITIES, MESH_PRESETS
+
+        settings = dict(MESH_PRESETS[1])
+        mesh = MeshingEngine().generate_mesh(dict(DEFAULT_MACHINE_PARAMS), settings)
+        engine = MMFCalculationEngine()
+        engine.set_connection_matrix(build_winding_connection_matrix(36, 4, True, 9))
+        engine.update_wt_angle(113)
+        reluctances = ReluctanceCalculator().calculate_reluctances(
+            mesh, DEFAULT_RELATIVE_PERMEABILITIES, {'axial_length': 110})
+        mmf = TeethSlotMMFCalculator().calculate_teeth_mmf(mesh, settings, engine)
+        result = FluxCalculator().calculate_flux_distribution(
+            reluctances, mmf, {'tolerance': 1e-6})
+        self.assertEqual(result['solver_info']['info'], 0)
+        self.assertLessEqual(result['solver_info']['relative_residual'], 1e-5)
+        self.assertEqual(result['potentials'][0], 0)
+        self.assertTrue(np.isfinite(list(
+            v['B_magnitude'] for v in result['flux_densities'].values())).all())
+
     def test_inaccurate_or_nonfinite_success_code_is_rejected(self):
         matrix = csr_matrix([[1.0, -1.0], [-1.0, 1.0]])
         for value in (0.0, math.nan, math.inf):
             with self.subTest(value=value), patch(
-                    'core.flux_solver.cg', return_value=(np.array([value]), 0)):
+                    'core.flux_solver.cg', return_value=(np.array([value]), 0)) as solve:
                 with self.assertRaisesRegex(RuntimeError, 'did not converge'):
                     FluxCalculator()._solve_linear_system(
                         matrix, np.array([1.0, -1.0]), 1e-6)
+                self.assertLessEqual(solve.call_count, 3)
 
     def test_unbalanced_closed_network_sources_are_rejected(self):
         matrix = csr_matrix([[1.0, -1.0], [-1.0, 1.0]])

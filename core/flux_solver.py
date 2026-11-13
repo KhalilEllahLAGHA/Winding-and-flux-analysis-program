@@ -77,6 +77,7 @@ class FluxCalculator:
         self._solver_residual_norm = 0.0
         self._solver_relative_residual = 0.0
         self._solver_source_balance = 0.0
+        self._solver_refinement_steps = 0
 
     def calculate_flux_distribution(self, reluctance_results, mmf_results,
                                     solver_options=None, progress_callback=None,
@@ -154,6 +155,7 @@ class FluxCalculator:
                 'residual_norm': self._solver_residual_norm,
                 'relative_residual': self._solver_relative_residual,
                 'source_balance': self._solver_source_balance,
+                'refinement_steps': self._solver_refinement_steps,
             },
             'statistics': statistics,
             'neighbor_connectivity': self.neighbors,
@@ -421,6 +423,7 @@ class FluxCalculator:
             raise ValueError('The closed magnetic network has unbalanced sources.')
         potentials = np.zeros(n, dtype=np.float64)
         info = 0
+        self._solver_refinement_steps = 0
         if n > 1 and np.any(rhs):
             if matrix is self._cached_matrix:
                 if self._cached_reduced_matrix is None:
@@ -434,18 +437,41 @@ class FluxCalculator:
                 preconditioner = self._build_jacobi_preconditioner(reduced)
             potentials[1:], info = cg(reduced, rhs[1:], M=preconditioner,
                                       rtol=tolerance)
-        residual = matrix @ potentials - rhs
-        self._solver_residual_norm = float(np.linalg.norm(residual))
         rhs_norm = float(np.linalg.norm(rhs))
-        self._solver_relative_residual = (
-            self._solver_residual_norm / rhs_norm if rhs_norm else
-            self._solver_residual_norm)
-        if (info != 0 or not np.isfinite(potentials).all()
-                or not np.isfinite(self._solver_relative_residual)
-                or self._solver_relative_residual > max(10 * tolerance, 1e-12)):
-            raise RuntimeError(f'Magnetic solver did not converge (info={info}, '
-                               f'relative residual={self._solver_relative_residual:.3e}).')
-        return potentials, info
+        allowed_relative_residual = max(10 * tolerance, 1e-12)
+        for attempt in range(3):
+            residual = matrix @ potentials - rhs
+            self._solver_residual_norm = float(np.linalg.norm(residual))
+            self._solver_relative_residual = (
+                self._solver_residual_norm / rhs_norm if rhs_norm else
+                self._solver_residual_norm)
+            finite = np.isfinite(potentials).all() and np.isfinite(self._solver_relative_residual)
+            if info == 0 and finite and self._solver_relative_residual <= allowed_relative_residual:
+                if self._solver_refinement_steps:
+                    logger.info(
+                        'Magnetic solver refined successfully after %d warm restart(s); '
+                        'full relative residual %.3e.',
+                        self._solver_refinement_steps, self._solver_relative_residual)
+                return potentials, info
+            if attempt == 2 or info != 0 or not finite:
+                break
+
+            # The omitted reference residual is -sum(reduced residuals)
+            # for balanced sources. Its full norm can be sqrt(n) larger.
+            # Tighten the reduced absolute target and recompute CG's true
+            # starting residual while retaining the current potentials.
+            residual_budget = (allowed_relative_residual * rhs_norm
+                               - abs(self._solver_source_balance))
+            if residual_budget <= 0:
+                break
+            reduced_atol = 0.5 * residual_budget / np.sqrt(n) * 0.1 ** attempt
+            potentials[1:], info = cg(
+                reduced, rhs[1:], x0=potentials[1:].copy(), M=preconditioner,
+                rtol=0.0, atol=reduced_atol)
+            self._solver_refinement_steps += 1
+
+        raise RuntimeError(f'Magnetic solver did not converge (info={info}, '
+                           f'relative residual={self._solver_relative_residual:.3e}).')
 
     # ------------------------------------------------------------- results
 

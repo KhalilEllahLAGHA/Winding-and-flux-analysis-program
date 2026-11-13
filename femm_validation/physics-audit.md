@@ -18,6 +18,16 @@ consistent with the polar reluctance integral. Radial half-reluctances now use
 the actual arithmetic node radius. The sparse Laplacian has one potential
 reference fixed, and each solve checks its full residual and source balance.
 
+On 13 November 2026, a reduced-system stopping mismatch was corrected. For n
+nodes and balanced sources, the omitted reference residual is the negative sum
+of the reduced residuals, so the full residual norm can be sqrt(n) larger.
+When CG reports success but the full check fails, the solver warm-restarts
+from the current potentials with a tighter absolute target derived from this
+bound, then checks the full residual again. Refinement is bounded to two retries.
+The existing full-system acceptance limit remains in force. The medium mesh at
+Wt = 113 degrees now completes after one retry, reducing the full relative
+residual from 1.358e-5 to 5.301e-8.
+
 ## Winding and current-source placement
 
 - The return side of each double-layer coil now has the opposite sign in the

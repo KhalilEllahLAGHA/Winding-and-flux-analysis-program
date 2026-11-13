@@ -218,7 +218,7 @@ class MeshingPageUI:
         window.mesh_figure, window.mesh_ax = plt.subplots(figsize=(8, 8))
         window.mesh_figure.patch.set_facecolor('white')
         window.mesh_ax.set_facecolor('white')
-        window.mesh_figure.set_tight_layout(True)
+        window.mesh_figure.set_layout_engine('tight')
 
         window.mesh_canvas = FigureCanvas(window.mesh_figure)
         window.mesh_machine_drawer = MachineDrawer(window.mesh_figure,

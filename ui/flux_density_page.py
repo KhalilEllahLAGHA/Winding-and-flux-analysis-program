@@ -1021,7 +1021,7 @@ class FluxDensityHeatmapUI:
                     figsize=self.animation_frame_figsize,
                     dpi=self.animation_frame_dpi)
                 heatmap_figure.patch.set_facecolor('white')
-                heatmap_figure.set_tight_layout(True)
+                heatmap_figure.set_layout_engine('tight')
                 heatmap_update = setup_heatmap_animation(
                     heatmap_ax, heatmap_figure, mesh_data, machine_params)
 
