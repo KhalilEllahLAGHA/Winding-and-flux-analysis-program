@@ -1,4 +1,4 @@
-"""MMF Curves tab (formerly ``MMF_tab.py``): plot controls, connection
+"""MMF Curves tab: plot controls, connection
 matrix dialog, data export, and the resultant-MMF animation window."""
 
 import logging

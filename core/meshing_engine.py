@@ -1,5 +1,4 @@
-"""Polar mesh generation for the 4-region machine model
-(formerly ``Meshing_engine.py``).
+"""Polar mesh generation for the 4-region machine model.
 
 Pure calculation module: errors are raised as ``ValueError`` and presented
 by the UI layer (the engine no longer pops Qt message boxes itself).

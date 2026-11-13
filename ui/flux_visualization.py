@@ -1,5 +1,4 @@
-"""Flux density and flux line visualisations
-(formerly ``Meshing_flux_density_visualisation.py``).
+"""Flux density and flux line visualisations.
 
 Mesh geometry (patches, centres, trig factors) is cached so repeated
 visualisations and animation frames don't rebuild it for every draw.

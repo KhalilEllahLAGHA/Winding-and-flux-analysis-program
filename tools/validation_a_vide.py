@@ -1,5 +1,4 @@
-"""Standalone FEMM tool: no-load (à vide) motor validation with empty slots
-(formerly ``validation_a_vide.py`` at the root).
+"""Standalone FEMM tool: no-load (à vide) motor validation with empty slots.
 
 Run directly: ``python tools/validation_a_vide.py`` (requires FEMM + pyfemm).
 """

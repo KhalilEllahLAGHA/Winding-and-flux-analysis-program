@@ -1,4 +1,4 @@
-"""Flux Viewer tab (formerly ``Flux_viewer_tab.py``): hosts the three-step
+"""Flux Viewer tab: hosts the three-step
 flow Motor Drawing -> Meshing Config -> Flux Density Heatmap with a wizard
 style step indicator and contextual navigation hints."""
 

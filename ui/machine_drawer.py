@@ -1,5 +1,4 @@
-"""Matplotlib machine cross-section drawing
-(formerly ``Meshing_machine_drawer.py``)."""
+"""Matplotlib machine cross-section drawing."""
 
 import matplotlib.pyplot as plt
 from matplotlib.patches import Circle, Wedge

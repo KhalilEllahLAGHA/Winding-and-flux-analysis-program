@@ -1,5 +1,5 @@
 """Standalone FEMM tool: motor simulation with stator windings driven by a
-connection matrix loaded from Excel (formerly ``flux_run.py`` at the root).
+connection matrix loaded from Excel.
 
 Run directly: ``python tools/flux_run.py`` (requires FEMM + pyfemm).
 """

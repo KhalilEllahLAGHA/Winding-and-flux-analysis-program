@@ -1,5 +1,4 @@
-"""Reluctance network calculation for mesh elements
-(formerly ``Meshing_reluctance_calculation.py``)."""
+"""Reluctance network calculation for mesh elements."""
 
 import logging
 import time

@@ -1,5 +1,5 @@
 """Winding feasibility checks, winding factors, and the explanatory report
-shown in the Winding Simulator tab (formerly ``explanation.py``)."""
+shown in the Winding Simulator tab."""
 
 import math
 from fractions import Fraction

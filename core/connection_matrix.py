@@ -1,5 +1,4 @@
-"""Connection-matrix construction for single and double layer windings
-(formerly ``matrix.py``)."""
+"""Connection-matrix construction for single and double layer windings."""
 
 import math
 

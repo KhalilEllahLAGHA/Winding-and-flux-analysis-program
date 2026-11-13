@@ -1,4 +1,4 @@
-"""Stator winding cross-section widget (formerly ``StatorDrawing.py``)."""
+"""Stator winding cross-section widget."""
 
 import math
 

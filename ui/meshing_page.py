@@ -1,4 +1,4 @@
-"""Step 2: meshing configuration page (formerly ``Meshing_Page_UI.py``).
+"""Step 2: meshing configuration page.
 
 Fixes a bug from the original file where ``update_mesh_visualization`` was
 defined twice: the duplicate silently disabled mesh invalidation, so stale

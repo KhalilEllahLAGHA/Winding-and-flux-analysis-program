@@ -1,5 +1,4 @@
-"""Step 1: machine parameters page
-(formerly ``Meshing_motor_drawing_page_UI.py``)."""
+"""Step 1: machine parameters page."""
 
 import logging
 

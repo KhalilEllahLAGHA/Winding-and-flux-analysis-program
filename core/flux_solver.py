@@ -1,4 +1,4 @@
-"""Magnetic-circuit flux solver (formerly ``Meshing_flux_calculation.py``).
+"""Magnetic-circuit flux solver.
 
 Builds the reluctance-network system matrix, solves the nodal potentials
 with a Jacobi-preconditioned conjugate gradient solver, and derives branch

@@ -1,4 +1,4 @@
-"""Step 3: flux density heatmap page (formerly ``Meshing_flux_page_UI.py``).
+"""Step 3: flux density heatmap page.
 
 Runs the reluctance -> teeth MMF -> flux solve pipeline, renders the
 selected visualisation, plays Wt-sweep animations, and compares results

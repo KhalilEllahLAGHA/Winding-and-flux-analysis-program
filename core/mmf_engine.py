@@ -1,4 +1,4 @@
-"""MMF profile calculation engine (formerly ``mmf_calculation_engine.py``).
+"""MMF profile calculation engine.
 
 Computes tooth-based MMF profiles per phase from a connection matrix and
 combines them into the rotating resultant

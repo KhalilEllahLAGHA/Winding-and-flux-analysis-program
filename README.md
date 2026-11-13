@@ -32,7 +32,7 @@ close at 360 degrees. Custom slot width is retained when switching tabs.
 ## Field display
 
 **Solve field** opens the density map with magnetic flux contours. Select a
-display mode above the plot and choose 4–100 contour levels. The view refreshes
+display mode above the plot and choose 4–100 contour levels (12 by default). The view refreshes
 automatically. Click inside the machine to inspect the solved cell's Br,
 Btheta and |B| in tesla. Pan and zoom use the plot toolbar.
 
@@ -46,7 +46,7 @@ Curve detail depends on mesh resolution, including near slot corners.
 
 ## FEMM comparison
 
-Generate a mesh in **Flux Viewer → Step 2**, then click **Validation using FEMM**
+Generate a mesh in **Flux Viewer → Step 2**, then click **Validate in FEMM**
 in Step 3. The button recalculates the local model automatically, builds FEMM
 from the active winding connection matrix, current, electrical angle, turns,
 geometry, permeabilities and axial length, and reports the differences in
@@ -83,6 +83,15 @@ slot indexing and distributed winding sources. The default mid-mesh peak radial
 B difference is now about 0.067%. Signed curve comparisons retain the remaining
 local discretization errors. See [the audit](femm_validation/physics-audit.md)
 for equations, mesh convergence, measured residuals and reproduction commands.
+
+## Acknowledgements
+
+Luigi Alberti’s article, [*Koil: A Tool to Design the Winding of Rotating
+Electric Machinery*](https://doi.org/10.1109/ICELMACH.2018.8507004), ICEM 2018,
+pp. 805–811, helped me understand the winding algorithm, particularly the
+star-of-slots method and the assignment of coil sides to phases.
+
+AI agents helped me refine the application and identify and fix bugs.
 
 ## Layout
 

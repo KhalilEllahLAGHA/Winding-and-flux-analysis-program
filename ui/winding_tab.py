@@ -1,4 +1,4 @@
-"""Winding Simulator tab (formerly ``Winding_tab.py``).
+"""Winding Simulator tab.
 
 The controller builds the tab inside ``main_window.tab_main`` and keeps the
 interactive widgets as attributes of the main window because the other tabs
