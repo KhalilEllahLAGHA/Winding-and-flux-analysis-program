@@ -82,37 +82,24 @@ def run_smoke_test(window, output):
                     ('Solve field', 'Refresh view', 'Prepare animation')
                     for button in window.findChildren(QPushButton)))
 
-    # Compare windings at one electrical angle using the prepared machine response.
-    mesh = window.meshing_page_ui.mesh_data
-    window.flux_anim_wt_spin.setValue(47.25)
-    for control, value in ((window.flux_anim_span_spin, 7),
-                           (window.flux_anim_phases_spin, 9),
-                           (window.flux_anim_layer_combo, 'Single layer'),
-                           (window.flux_anim_layer_combo, 'Double layer'),
-                           (window.flux_anim_phases_spin, 3),
-                           (window.flux_anim_span_spin, 9)):
-        previous = controller.animation_model
-        if isinstance(value, str):
-            control.setCurrentText(value)
-        else:
-            control.setValue(value)
-        _wait_until(lambda: controller.animation_model is not None
-                    and controller.animation_model is not previous
-                    and controller._animation_worker is None)
-        _require(window.meshing_page_ui.mesh_data is mesh)
-        _require(abs(controller._animation_angle - 47.25) < 1e-8)
-        _require(not controller.animation_timer.isActive())
-        _require(controller.animation_model.network_reused)
-        _require(controller.animation_model.direct_winding_updates)
-    _require(window.phases_spin.value() == window.flux_anim_phases_spin.value() == 3)
-    _require(window.span_spin.value() == window.flux_anim_span_spin.value() == 9)
-    _require(window.double_layer.isChecked())
+    # Wt inspection and Restart reuse the prepared field; machine inputs stay in Winding.
+    for name in ('flux_anim_phases_spin', 'flux_anim_span_spin', 'flux_anim_layer_combo'):
+        _require(not hasattr(window, name))
     cached_model = controller.animation_model
+    window.flux_anim_wt_spin.setValue(47.25)
+    _require(abs(controller._animation_angle - 47.25) < 1e-8)
     window.flux_restart_anim_btn.click()
     _require(controller._animation_angle == window.flux_anim_wt_spin.value() == 0)
     _require(controller.animation_model is cached_model)
     _require(controller._animation_worker is None)
     _require(not controller.animation_timer.isActive())
+    _require(window.flux_save_video_btn.isEnabled())
+    _require(not hasattr(window, 'mesh_toolbar'))
+    window.navigate_to_stage(3)
+    mesh_artists = tuple(window.mesh_ax.collections) + tuple(window.mesh_ax.patches)
+    window.navigate_to_stage(2)
+    window.navigate_to_stage(3)
+    _require(tuple(window.mesh_ax.collections) + tuple(window.mesh_ax.patches) == mesh_artists)
 
     captures = []
     clipping = []
@@ -185,7 +172,7 @@ def run_smoke_test(window, output):
                  'worker_responsive': bool(heartbeats), 'cache_reused': True,
                  'automatic_preparation': True, 'arrow_toggle': True,
                  'paused_initially': True, 'play_pause_toggle': True,
-                 'winding_controls': True, 'prepared_winding_response': True, 'wt_seek': True, 'restart': True}
+                 'wt_only_controls': True, 'video_export_available': True, 'cached_mesh_navigation': True, 'wt_seek': True, 'restart': True}
 
     window.meshing_page_ui.invalidate_mesh()
     _require(not window.navigation_buttons[4].isEnabled())
@@ -198,7 +185,7 @@ def run_smoke_test(window, output):
         'checks': ['direct navigation', 'mesh prerequisite', 'mesh generation',
                    'automatic field preparation', 'arrow visibility',
                    'paused initial view', 'single play/pause button',
-                   'winding comparison without solving', 'Wt seek and restart',
+                   'Wt-only controls', 'cached mesh navigation', 'Wt seek and restart',
                    'export enabled', 'mesh invalidation',
                    'desktop and minimum-size layouts'],
     }

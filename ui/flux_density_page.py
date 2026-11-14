@@ -26,7 +26,6 @@ from ui.theme import (FLUX_DENSITY_PAGE_STYLE, PAGE_SUBTITLE_STYLE,
 from utils.constants import (DEFAULT_AXIAL_LENGTH_MM, DEFAULT_CONTOUR_COUNT,
                              DEFAULT_RELATIVE_PERMEABILITIES)
 from utils.paths import FEMM_VALIDATION_DIR, PROJECT_ROOT, femm_worker_command
-from utils.phases import MAX_PHASE_COUNT
 
 import pyqtgraph as pg
 from ui.field_animation import AnimationPreparation, FieldAnimationView
@@ -59,6 +58,7 @@ class FluxDensityHeatmapUI:
         self.pyqtgraph_available = True
         self.animation_model = None
         self._animation_worker = None
+        self._video_worker = None
         self._cached_animation_signature = None
         self._animation_angle = 0.0
         self._has_animation_angle = False
@@ -101,7 +101,6 @@ class FluxDensityHeatmapUI:
 
         self.main_window.flux_density_page_ui = self
         self._connect_animation_inputs()
-        self._sync_animation_winding_controls()
         return widget
 
     def _build_left_panel(self):
@@ -307,21 +306,6 @@ class FluxDensityHeatmapUI:
         layout = QVBoxLayout(tab)
         settings = QFormLayout()
         settings.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
-        window.flux_anim_phases_spin = QSpinBox()
-        window.flux_anim_phases_spin.setRange(1, MAX_PHASE_COUNT)
-        window.flux_anim_phases_spin.setKeyboardTracking(False)
-        window.flux_anim_phases_spin.valueChanged.connect(window.phases_spin.setValue)
-        settings.addRow("Phases", window.flux_anim_phases_spin)
-        window.flux_anim_span_spin = QSpinBox()
-        window.flux_anim_span_spin.setRange(1, window.slots_spin.value())
-        window.flux_anim_span_spin.setKeyboardTracking(False)
-        window.flux_anim_span_spin.setSuffix(" slots")
-        window.flux_anim_span_spin.valueChanged.connect(window.span_spin.setValue)
-        settings.addRow("Coil span", window.flux_anim_span_spin)
-        window.flux_anim_layer_combo = QComboBox()
-        window.flux_anim_layer_combo.addItems(("Single layer", "Double layer"))
-        window.flux_anim_layer_combo.currentIndexChanged.connect(self._change_animation_layer)
-        settings.addRow("Layers", window.flux_anim_layer_combo)
         window.flux_anim_wt_spin = QDoubleSpinBox()
         window.flux_anim_wt_spin.setRange(0, 360)
         window.flux_anim_wt_spin.setDecimals(2)
@@ -363,26 +347,20 @@ class FluxDensityHeatmapUI:
         window.flux_restart_anim_btn.clicked.connect(self.restart_animation)
         buttons.addWidget(window.flux_restart_anim_btn)
         layout.addLayout(buttons)
+        window.flux_save_video_btn = QPushButton("Save video (2 loops)")
+        window.flux_save_video_btn.setToolTip(
+            'Save two 360-degree cycles: 1 degree per frame, 16 ms per frame, 11.52 seconds.')
+        window.flux_save_video_btn.setEnabled(False)
+        window.flux_save_video_btn.clicked.connect(self.save_animation_video)
+        layout.addWidget(window.flux_save_video_btn)
+        window.flux_video_progress = QProgressBar()
+        window.flux_video_progress.setFormat('Saving video: %p%')
+        window.flux_video_progress.hide()
+        layout.addWidget(window.flux_video_progress)
         layout.addStretch()
         return tab
 
-    def _sync_animation_winding_controls(self, *_):
-        window = self.main_window
-        with QSignalBlocker(window.flux_anim_phases_spin):
-            window.flux_anim_phases_spin.setValue(window.phases_spin.value())
-        with QSignalBlocker(window.flux_anim_span_spin):
-            window.flux_anim_span_spin.setMaximum(window.slots_spin.value())
-            window.flux_anim_span_spin.setSingleStep(window.span_spin.singleStep())
-            window.flux_anim_span_spin.setValue(window.span_spin.value())
-        with QSignalBlocker(window.flux_anim_layer_combo):
-            window.flux_anim_layer_combo.setCurrentIndex(1 if window.double_layer.isChecked() else 0)
-
-    def _change_animation_layer(self, index):
-        window = self.main_window
-        (window.double_layer if index else window.single_layer).setChecked(True)
-
     def _animation_winding_changed(self, *_):
-        self._sync_animation_winding_controls()
         self.invalidate_animation()
 
     def _seek_animation_angle(self, angle):
@@ -687,6 +665,7 @@ class FluxDensityHeatmapUI:
         window = self.main_window
         window.flux_export_all_btn.setEnabled(False)
         window.flux_femm_validation_btn.setEnabled(False)
+        self._update_video_button()
         window.flux_play_anim_btn.setEnabled(self._prepare_pending)
         window.flux_anim_pg_widget.clear_model(
             'Preparing field...' if self._prepare_pending else 'Generate a mesh to prepare the field.')
@@ -798,6 +777,7 @@ class FluxDensityHeatmapUI:
         window.flux_femm_validation_btn.setEnabled(True)
         window.flux_play_anim_btn.setEnabled(True)
         window.flux_play_anim_btn.setText('Play')
+        self._update_video_button()
         window.flux_anim_pg_widget.probe.clear()
         self._set_status(f'Field ready in {model.generation_seconds:.2f} s. Press Play.', 'success')
         if self._play_when_ready:
@@ -891,6 +871,66 @@ class FluxDensityHeatmapUI:
         if self.animation_model is not None:
             self._sync_field_results(0.0)
         self._set_status('Wt reset to zero.', 'muted')
+
+    def _update_video_button(self):
+        button = self.main_window.flux_save_video_btn
+        button.setText('Cancel video export' if self._video_worker else 'Save video (2 loops)')
+        button.setEnabled(self._video_worker is not None or self.animation_model is not None)
+
+    def save_animation_video(self):
+        if self._video_worker is not None:
+            self._video_worker.requestInterruption()
+            return
+        if self.animation_model is None:
+            return
+        from ui.video_export import VideoExportWorker
+        window = self.main_window
+        filename, _ = QFileDialog.getSaveFileName(
+            window, 'Save two animation loops', 'winding-flux-2-loops.mp4',
+            'MP4 video (*.mp4)')
+        if not filename:
+            return
+        if not filename.lower().endswith('.mp4'):
+            filename += '.mp4'
+        engine = self._mmf_engine()
+        metadata = (f'{engine.phase_count} phases | {window.slots_spin.value()} slots | '
+                    f'{window.poles_spin.value()} poles | span {window.span_spin.value()} | '
+                    + ('double layer' if engine.is_double_layer else 'single layer')
+                    + f' | N={engine.turns} | I peak={engine.phase_current_a:g} A')
+        worker = VideoExportWorker(
+            window, model=self.animation_model, path=filename,
+            mode=window.flux_visualization_type.currentText(),
+            contour_count=window.flux_contour_count.value(),
+            show_arrows=window.flux_show_arrows_check.isChecked(), metadata=metadata)
+        self._video_worker = worker
+        worker.progress.connect(self._video_progress)
+        worker.exported.connect(self._video_exported)
+        worker.failed.connect(self._video_failed)
+        worker.finished.connect(self._video_finished)
+        window.flux_video_progress.setValue(0)
+        window.flux_video_progress.show()
+        self._update_video_button()
+        worker.start()
+
+    def _video_progress(self, percent, message):
+        self.main_window.flux_video_progress.setValue(percent)
+
+    def _video_exported(self, path):
+        if not self._closing:
+            self._set_status('Video saved: two complete 360-degree loops.', 'success')
+
+    def _video_failed(self, message):
+        if not self._closing:
+            cancelled = 'cancel' in message.lower()
+            self._set_status('Video export cancelled.' if cancelled else f'Video export failed: {message}',
+                             'muted' if cancelled else 'error')
+
+    def _video_finished(self):
+        worker, self._video_worker = self._video_worker, None
+        self.main_window.flux_video_progress.hide()
+        if worker is not None:
+            worker.deleteLater()
+        self._update_video_button()
 
     # --------------------------------------------------------- FEMM validation
 

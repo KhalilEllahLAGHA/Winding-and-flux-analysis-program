@@ -155,10 +155,15 @@ class MainWindow(QMainWindow):
             controller._closing = True
             controller._auto_prepare_timer.stop()
             controller.pause_animation(sync_results=False)
-        worker = getattr(controller, '_animation_worker', None)
-        if worker is not None and worker.isRunning():
+        running = [worker for worker in (getattr(controller, '_animation_worker', None),
+                                        getattr(controller, '_video_worker', None))
+                   if worker is not None and worker.isRunning()]
+        for worker in running:
             worker.requestInterruption()
-            worker.finished.connect(self.close)
+            if not getattr(worker, '_close_connected', False):
+                worker.finished.connect(self.close)
+                worker._close_connected = True
+        if running:
             event.ignore()
             return
         # Release pyplot's hidden figure managers as well as the Qt window.
@@ -176,7 +181,7 @@ class MainWindow(QMainWindow):
         if stage == 4 and not has_mesh_data(self):
             return
         if stage != 4:
-            self.flux_density_page_ui.pause_animation()
+            self.flux_density_page_ui.pause_animation(sync_results=False)
         if stage < 2:
             self.tabs.setCurrentIndex(stage)
         else:

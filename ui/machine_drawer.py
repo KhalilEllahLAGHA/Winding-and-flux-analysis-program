@@ -17,7 +17,7 @@ class MachineDrawer:
         self.figure = figure
         self.ax = ax
 
-    def draw_machine(self, params):
+    def draw_machine(self, params, render=True):
         """Draw the machine cross-section, or an error notice when the
         parameters are inconsistent."""
         self.ax.clear()
@@ -29,7 +29,8 @@ class MachineDrawer:
         except Exception as error:
             self._draw_error(str(error))
 
-        self.figure.canvas.draw()
+        if render:
+            self.figure.canvas.draw()
 
     def _apply_white_theme(self):
         self.ax.set_facecolor('white')

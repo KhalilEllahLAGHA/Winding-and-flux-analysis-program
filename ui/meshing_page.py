@@ -1,22 +1,11 @@
-"""Step 2: meshing configuration page.
-
-Fixes a bug from the original file where ``update_mesh_visualization`` was
-defined twice: the duplicate silently disabled mesh invalidation, so stale
-meshes survived machine-parameter changes. The two roles are now explicit:
-``invalidate_mesh`` (parameters changed) and ``refresh_visualization``
-(page redisplayed).
-"""
+"""Mesh settings, generation and a cached machine preview."""
 
 import csv
 import json
 import logging
 
-import matplotlib.pyplot as plt
-import numpy as np
 import pandas as pd
-from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
-from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as NavigationToolbar
-from PyQt6.QtCore import QSize, Qt, QTimer
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import (QApplication, QComboBox, QFileDialog, QFormLayout,
                              QFrame, QGroupBox, QHBoxLayout, QLabel, QProgressBar,
                              QPushButton, QScrollArea, QSizePolicy, QSpinBox,
@@ -24,7 +13,7 @@ from PyQt6.QtWidgets import (QApplication, QComboBox, QFileDialog, QFormLayout,
                              QVBoxLayout, QWidget)
 
 from core.meshing_engine import MeshingEngine
-from ui.machine_drawer import MachineDrawer
+from ui.machine_plot import MachinePlot
 from ui.theme import (MESHING_PAGE_STYLE, PAGE_SUBTITLE_STYLE,
                       PAGE_TITLE_STYLE, SECTION_LABEL_STYLE, set_status)
 from utils.constants import (DEFAULT_MACHINE_PARAMS, DEFAULT_MESH_PRESET_INDEX,
@@ -34,8 +23,6 @@ from utils.safe_eval import parse_float_field, parse_int_field
 logger = logging.getLogger(__name__)
 
 REDRAW_DEBOUNCE_MS = 300
-MESH_OVERLAY_LINEWIDTH = 0.3
-MESH_OVERLAY_ALPHA = 0.7
 
 
 class MeshingPageUI:
@@ -216,31 +203,16 @@ class MeshingPageUI:
     def _build_visualization_panel(self, parent_widget):
         window = self.main_window
 
-        window.mesh_figure, window.mesh_ax = plt.subplots(figsize=(8, 8))
-        window.mesh_figure.patch.set_facecolor('white')
-        window.mesh_ax.set_facecolor('white')
-        window.mesh_figure.set_layout_engine('tight')
-
-        window.mesh_canvas = FigureCanvas(window.mesh_figure)
-        window.mesh_machine_drawer = MachineDrawer(window.mesh_figure,
-                                                   window.mesh_ax)
+        window.mesh_plot = MachinePlot()
+        window.mesh_figure, window.mesh_ax = window.mesh_plot.figure, window.mesh_plot.ax
+        window.mesh_canvas = window.mesh_plot.canvas
+        window.mesh_machine_drawer = window.mesh_plot.drawer
 
         self._connect_to_machine_parameters()
         window.meshing_page_ui = self
         self.draw_base_machine()
 
-        right_panel = QVBoxLayout()
-        right_panel.setContentsMargins(0, 0, 0, 0)
-        right_panel.setSpacing(6)
-        window.mesh_toolbar = NavigationToolbar(window.mesh_canvas, parent_widget)
-        window.mesh_toolbar.setIconSize(QSize(18, 18))
-        window.mesh_toolbar.setFixedHeight(34)
-        right_panel.addWidget(window.mesh_toolbar)
-        right_panel.addWidget(window.mesh_canvas)
-
-        right_widget = QWidget()
-        right_widget.setLayout(right_panel)
-        return right_widget
+        return window.mesh_plot
 
     def _connect_to_machine_parameters(self):
         """Invalidate the mesh (debounced) when machine parameters change."""
@@ -477,7 +449,7 @@ class MeshingPageUI:
         self.draw_base_machine()
 
     def refresh_visualization(self):
-        """Redraw the current state (meshed when data exists, base otherwise)."""
+        """Refresh changed data while preserving an unchanged plotted view."""
         if not hasattr(self.main_window, 'mesh_canvas'):
             return
         if self.mesh_data:
@@ -502,11 +474,11 @@ class MeshingPageUI:
                 'slot_angle': params['slot_angle'],
                 'slot_height': params['slot_height'],
             }
-            window.mesh_machine_drawer.draw_machine(drawer_params)
-            window.mesh_canvas.draw()
+            window.mesh_plot.draw_machine(drawer_params)
 
         except Exception as error:
             logger.error("Error drawing base machine: %s", error)
+            window.mesh_plot.clear_cache()
             window.mesh_ax.clear()
             window.mesh_ax.text(
                 0, 0,
@@ -518,44 +490,15 @@ class MeshingPageUI:
             window.mesh_canvas.draw()
 
     def draw_meshed_machine(self):
-        """Draw the base machine with the mesh-line overlay on top."""
+        """Draw changed geometry and mesh in one canvas pass."""
         if not self.mesh_data:
             self.draw_base_machine()
             return
-
         try:
-            self.draw_base_machine()
-            self._draw_mesh_overlay(
-                self.mesh_data['r_divisions'],
-                self.mesh_data['theta_divisions'],
-                self.mesh_data['params'])
-            self.main_window.mesh_canvas.draw()
-
+            self.main_window.mesh_plot.draw_machine(self.mesh_data['params'], self.mesh_data)
         except Exception as error:
             logger.error("Error drawing meshed machine: %s", error)
             self.draw_base_machine()
-
-    def _draw_mesh_overlay(self, r_divisions, theta_divisions, machine_params):
-        """Neutral radial lines and circles marking mesh divisions."""
-        ax = self.main_window.mesh_ax
-        inner_radius = machine_params['shaft_radius']
-        outer_radius = machine_params['stator_outer_radius']
-
-        for theta in theta_divisions[:-1]:  # skip 360° (duplicate of 0°)
-            theta_rad = np.radians(theta)
-            ax.plot([inner_radius * np.cos(theta_rad),
-                     outer_radius * np.cos(theta_rad)],
-                    [inner_radius * np.sin(theta_rad),
-                     outer_radius * np.sin(theta_rad)],
-                    color='#555555', linewidth=MESH_OVERLAY_LINEWIDTH,
-                    alpha=MESH_OVERLAY_ALPHA)
-
-        circle_angles = np.linspace(0, 2 * np.pi, 100)
-        for radius in r_divisions:
-            ax.plot(radius * np.cos(circle_angles),
-                    radius * np.sin(circle_angles),
-                    color='#333333', linewidth=MESH_OVERLAY_LINEWIDTH,
-                    alpha=MESH_OVERLAY_ALPHA)
 
     # ---------------------------------------------------------------- export
 

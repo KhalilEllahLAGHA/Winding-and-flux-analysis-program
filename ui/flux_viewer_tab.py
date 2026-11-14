@@ -49,8 +49,6 @@ def go_to_flux_step(main_window, step):
         return
     main_window.current_flux_step = step
     update_step_display(main_window)
-    if step == FluxViewerSteps.MESHING_CONFIG:
-        main_window.meshing_page_ui.refresh_visualization()
 
 
 def navigate_step(main_window, direction):

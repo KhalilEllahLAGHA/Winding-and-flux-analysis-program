@@ -2,14 +2,12 @@
 
 import logging
 
-import matplotlib.pyplot as plt
-from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import (QFormLayout, QFrame, QGroupBox, QHBoxLayout, QLabel,
                              QLineEdit, QPushButton, QScrollArea, QVBoxLayout,
                              QWidget)
 
-from ui.machine_drawer import MachineDrawer
+from ui.machine_plot import MachinePlot
 from ui.theme import (MOTOR_INPUT_PAGE_STYLE, PAGE_SUBTITLE_STYLE,
                       PAGE_TITLE_STYLE)
 from utils.constants import (DEFAULT_MACHINE_PARAMS, DEFAULT_PAIR_POLES,
@@ -54,13 +52,7 @@ class MotorDrawingPageUI:
         sidebar.setMaximumWidth(320)
         sidebar.setWidget(inputs)
         main_layout.addWidget(sidebar)
-        drawing = QFrame()
-        drawing.setObjectName('machinePlotSurface')
-        drawing.setStyleSheet('QFrame#machinePlotSurface { background: white; border: 1px solid #dedede; border-radius: 9px; }')
-        drawing_layout = QVBoxLayout(drawing)
-        drawing_layout.setContentsMargins(4, 4, 4, 4)
-        drawing_layout.addWidget(self._build_drawing_canvas())
-        main_layout.addWidget(drawing, 1)
+        main_layout.addWidget(self._build_drawing_canvas(), 1)
 
         self._connect_inputs_to_redraw()
         self._link_with_winding_tab()
@@ -163,14 +155,11 @@ class MotorDrawingPageUI:
     def _build_drawing_canvas(self):
         window = self.main_window
 
-        window.flux_figure, window.flux_ax = plt.subplots(figsize=(8, 8))
-        window.flux_figure.patch.set_facecolor('white')
-        window.flux_ax.set_facecolor('white')
-
-        window.flux_canvas = FigureCanvas(window.flux_figure)
-        window.flux_machine_drawer = MachineDrawer(window.flux_figure,
-                                                   window.flux_ax)
-        return window.flux_canvas
+        window.geometry_plot = MachinePlot()
+        window.flux_figure, window.flux_ax = window.geometry_plot.figure, window.geometry_plot.ax
+        window.flux_canvas = window.geometry_plot.canvas
+        window.flux_machine_drawer = window.geometry_plot.drawer
+        return window.geometry_plot
 
     # ------------------------------------------------------------ wiring
 
@@ -307,10 +296,11 @@ class MotorDrawingPageUI:
                 'slot_angle': parse_float_field(window.flux_slot_angle.text()),
                 'slot_height': parse_float_field(window.flux_slot_height.text()),
             }
-            window.flux_machine_drawer.draw_machine(params)
+            window.geometry_plot.draw_machine(params)
 
         except Exception as error:
             logger.error("Error drawing flux machine: %s", error)
+            window.geometry_plot.clear_cache()
             window.flux_ax.clear()
             window.flux_ax.text(
                 0, 0,
