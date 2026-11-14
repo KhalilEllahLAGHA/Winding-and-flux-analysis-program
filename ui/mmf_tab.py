@@ -367,7 +367,7 @@ class ConnectionMatrixTab(QWidget):
         self.wt_spin.setSuffix("°")
         self.wt_spin.setStyleSheet(SPIN_BOX_STYLE)
         self.wt_spin.setToolTip(
-            'Electrical angle. Dolomites phase shifts use 360/m degrees for odd '
+            'Electrical angle. Phase shifts use 360/m degrees for odd '
             'phase counts and 180/m degrees for even phase counts.')
         self.wt_spin.valueChanged.connect(self.update_wt_angle)
         params_layout.addWidget(QLabel('Angle · Wt'), 0, 2)

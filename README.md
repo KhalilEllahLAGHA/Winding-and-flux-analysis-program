@@ -19,6 +19,6 @@ python -m venv .venv
 
 The executable is `dist/WindingFlux.exe`. FEMM is optional.
 
-Winding generator: [Dolomites/Koil](https://gitlab.com/LuigiAlberti/dolomites-python),
-Luigi Alberti and contributors, GPLv3. See [licence](third_party/dolomites/LICENSE).
+Method reference: [Dolomites](https://gitlab.com/LuigiAlberti/dolomites-python),
+Luigi Alberti and contributors. The app implements its own winding generator.
 Reference: [Koil, ICEM 2018](https://doi.org/10.1109/ICELMACH.2018.8507004).

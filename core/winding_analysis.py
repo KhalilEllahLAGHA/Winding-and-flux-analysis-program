@@ -1,4 +1,4 @@
-"""Dolomites feasibility, winding factors, and legacy report helpers."""
+"""Winding feasibility, factors and report helpers."""
 
 import math
 from fractions import Fraction
@@ -19,7 +19,7 @@ def slots_per_pole_per_phase(slots, poles, phase_count=3):
 
 
 def check_winding_feasibility(slots, poles, phase_count=3, is_double_layer=True, coil_span=None):
-    """Use the actual Dolomites generator, rather than three-phase heuristics."""
+    """Check feasibility by building the requested physical winding."""
     q = slots_per_pole_per_phase(slots, poles, phase_count)
     try:
         build_winding_connection_matrix(slots, poles, is_double_layer, coil_span,

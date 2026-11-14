@@ -1,7 +1,7 @@
 """MMF profile calculation engine.
 
 Computes tooth-based MMF profiles per phase from a connection matrix and
-combines them into the resultant with the selected Dolomites phase offsets:
+combines them into the resultant with the selected phase offsets:
 360/m degrees for odd phase counts and 180/m degrees for even phase counts.
 
 Profiles are stored as ``(angles, values)`` NumPy array pairs instead of the

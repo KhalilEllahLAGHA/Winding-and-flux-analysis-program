@@ -4,4 +4,3 @@
 *.jpg binary
 *.jpeg binary
 *.ico binary
-third_party/dolomites/koil.py -text

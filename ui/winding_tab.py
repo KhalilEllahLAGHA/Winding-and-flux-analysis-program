@@ -109,7 +109,7 @@ class WindingTabController:
         window.phases_spin = QSpinBox()
         window.phases_spin.setRange(1, MAX_PHASE_COUNT)
         window.phases_spin.setValue(3)
-        window.phases_spin.setToolTip('Number of phases for the Dolomites winding generator.')
+        window.phases_spin.setToolTip('Number of phases in the winding.')
         window.phases_spin.valueChanged.connect(self.update_winding)
 
         min_slots, max_slots = SLOT_COUNT_RANGE
@@ -153,7 +153,7 @@ class WindingTabController:
         window.slots_spin.setToolTip("Total number of stator slots.")
         window.poles_spin.setToolTip("Total number of magnetic poles (2, 4, 6, …).")
         window.span_spin.setToolTip(
-            "Dolomites coil throw in slots. Single-layer windings use an odd throw.")
+            "Coil throw in slots. Single-layer windings use an odd throw.")
 
         config_group = QGroupBox("Coil configuration")
         config_form = QFormLayout(config_group)

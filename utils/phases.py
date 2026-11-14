@@ -1,4 +1,4 @@
-"""Phase identities and the odd/even phase convention used by Dolomites."""
+"""Phase identities, current offsets and display colours."""
 
 import colorsys
 import string
