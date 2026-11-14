@@ -13,7 +13,8 @@ import time
 import contourpy
 import numpy as np
 
-from core.flux_contours import reconstruct_flux_potential
+from core.flux_contours import (arrowhead_paths, flux_direction_arrows,
+                                reconstruct_flux_potential)
 from core.flux_solver import FluxCalculator
 from core.reluctance_calculator import ReluctanceCalculator
 from core.teeth_slot_mmf import TeethSlotMMFCalculator
@@ -58,17 +59,25 @@ class FieldAnimationModel:
         return image
 
     def contours_at(self, angle_deg, count=12):
+        return self.contour_frame_at(angle_deg, count)[0]
+
+    def contour_frame_at(self, angle_deg, count=12):
         angle = np.radians(angle_deg)
         values = (self.potential_basis[0] * np.cos(angle)
                   + self.potential_basis[1] * np.sin(angle))
         low, high = float(values.min()), float(values.max())
         if high - low <= max(abs(high), abs(low), 1e-30) * 1e-12:
-            return np.empty((0, 2))
+            return np.empty((0, 2)), np.empty((0, 2))
         levels = np.linspace(low, high, int(np.clip(count, 4, 100)) + 2)[1:-1]
         generator = contourpy.contour_generator(
             x=self.contour_x, y=self.contour_y, z=values,
             name='serial', line_type='Separate')
-        return _joined_paths(path for level in generator.multi_lines(levels) for path in level)
+        paths = [path for level in generator.multi_lines(levels) for path in level]
+        radii = np.hypot(self.contour_x[:, 0], self.contour_y[:, 0])
+        angles = np.degrees(np.unwrap(np.arctan2(self.contour_y[0], self.contour_x[0])))
+        centers, directions = flux_direction_arrows(paths, radii, angles, values)
+        arrows = arrowhead_paths(centers, directions, self.outer_radius * 0.035)
+        return _joined_paths(paths), arrows
 
     @classmethod
     def from_solutions(cls, mesh, solutions, axial_length_mm, resolution=640):

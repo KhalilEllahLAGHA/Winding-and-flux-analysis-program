@@ -25,6 +25,8 @@ femm_validation/runs/
 /pics/
 /context.md
 /requirements-report.txt
+/requirements-build.txt
+/WindingFlux.spec
 /femm_validation/*.fem
 /femm_validation/*.ans
 /femm_validation/physics-audit.md

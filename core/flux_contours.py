@@ -20,6 +20,76 @@ class FluxContourData:
     relative_residual: float
 
 
+def flux_direction_arrows(paths, radii_mm, angles_deg, potential,
+                          spacing_mm=None, max_arrows=128):
+    """Place arrows along contours, oriented by B = curl(Az ez)."""
+    radii = np.asarray(radii_mm)
+    angles = np.radians(angles_deg)
+    potential = np.asarray(potential)
+    outer = float(radii[-1])
+    spacing = float(spacing_mm or outer * 0.65)
+    centers, tangents = [], []
+    for path in paths:
+        path = np.asarray(path)
+        if len(path) < 2 or not np.isfinite(path).all():
+            continue
+        distance = np.r_[0., np.cumsum(np.linalg.norm(np.diff(path, axis=0), axis=1))]
+        keep = np.r_[True, np.diff(distance) > outer * 1e-12]
+        distance, path = distance[keep], path[keep]
+        if distance[-1] < outer * 0.1:
+            continue
+        count = max(1, int(distance[-1] / spacing))
+        marks = (np.arange(count) + 0.5) * distance[-1] / count
+        sample = lambda s: np.column_stack([np.interp(s, distance, path[:, k])
+                                            for k in (0, 1)])
+        centers.append(sample(marks))
+        tangents.append(sample(marks + outer * 0.008) - sample(marks - outer * 0.008))
+    if not centers or max_arrows < 1:
+        return np.empty((0, 2)), np.empty((0, 2))
+    centers, tangents = np.concatenate(centers), np.concatenate(tangents)
+    if len(centers) > max_arrows:
+        selected = np.linspace(0, len(centers)-1, max_arrows, dtype=int)
+        centers, tangents = centers[selected], tangents[selected]
+
+    radius = np.hypot(centers[:, 0], centers[:, 1])
+    theta = (np.arctan2(centers[:, 1], centers[:, 0]) - angles[0]) % (2*np.pi) + angles[0]
+    ri = np.clip(np.searchsorted(radii, radius, side='right')-1, 0, len(radii)-2)
+    ti = np.clip(np.searchsorted(angles, theta, side='right')-1, 0, len(angles)-2)
+    dr = np.log(radii[ri+1] / radii[ri])
+    dt = angles[ti+1] - angles[ti]
+    u = np.clip(np.log(radius / radii[ri]) / dr, 0, 1)
+    v = np.clip((theta - angles[ti]) / dt, 0, 1)
+    a00, a01 = potential[ri, ti], potential[ri, ti+1]
+    a10, a11 = potential[ri+1, ti], potential[ri+1, ti+1]
+    # Common 1/r and mm-to-m factors cancel when finding the direction.
+    br = ((1-u)*(a01-a00) + u*(a11-a10)) / dt
+    bt = -((1-v)*(a10-a00) + v*(a11-a01)) / dr
+    field = np.column_stack((br*np.cos(theta) - bt*np.sin(theta),
+                             br*np.sin(theta) + bt*np.cos(theta)))
+    magnitude = np.linalg.norm(field, axis=1)
+    tangent_length = np.linalg.norm(tangents, axis=1)
+    alignment = np.einsum('ij,ij->i', field, tangents)
+    valid = ((magnitude > max(float(magnitude.max()) * 1e-10, 1e-300))
+             & (tangent_length > outer * 1e-12)
+             & (np.abs(alignment) > magnitude * tangent_length * 1e-6))
+    directions = tangents[valid] / tangent_length[valid, None]
+    directions *= np.sign(alignment[valid, None])
+    return centers[valid], directions
+
+
+def arrowhead_paths(centers, directions, length_mm):
+    """Joined chevrons for both static figures and the live Qt view."""
+    if not len(centers):
+        return np.empty((0, 2))
+    normal = np.column_stack((-directions[:, 1], directions[:, 0]))
+    tail = centers - directions * length_mm * 0.6
+    paths = np.full((len(centers), 4, 2), np.nan)
+    paths[:, 0] = tail + normal * length_mm * 0.38
+    paths[:, 1] = centers + directions * length_mm * 0.4
+    paths[:, 2] = tail - normal * length_mm * 0.38
+    return paths.reshape(-1, 2)
+
+
 def reconstruct_flux_potential(mesh_data, branch_fluxes, axial_length_mm):
     """Recover Az on mesh corners, preserving the annular boundary conditions.
 

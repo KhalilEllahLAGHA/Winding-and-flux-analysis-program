@@ -10,10 +10,11 @@ import matplotlib.colors as colors
 import matplotlib.lines as mlines
 import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib.collections import PolyCollection
+from matplotlib.collections import LineCollection, PolyCollection
 from matplotlib.patches import Circle, Wedge
 
-from core.flux_contours import reconstruct_flux_potential
+from core.flux_contours import (arrowhead_paths, flux_direction_arrows,
+                                reconstruct_flux_potential)
 
 try:
     from scipy.interpolate import griddata
@@ -37,7 +38,8 @@ DEFAULT_CONTOUR_COUNT = 12
 STREAMPLOT_KWARGS = dict(
     density=1.1,
     linewidth=0.8,
-    arrowstyle='-',
+    arrowstyle='-|>',
+    arrowsize=1.1,
     minlength=0.1,
     broken_streamlines=False,
     integration_direction='both',
@@ -654,8 +656,14 @@ class FluxDensityVisualizer:
         y = radii[:, None] * np.sin(theta)
         x[:, -1], y[:, -1] = x[:, 0], y[:, 0]
         levels = np.linspace(low, high, count + 2)[1:-1]
-        ax.contour(x, y, values, levels=levels, colors='#222222', linewidths=0.7,
-                   linestyles='solid', antialiased=True, zorder=5)
+        contours = ax.contour(x, y, values, levels=levels, colors='#222222', linewidths=0.7,
+                              linestyles='solid', antialiased=True, zorder=5)
+        paths = [path for level in contours.allsegs for path in level]
+        centers, directions = flux_direction_arrows(paths, radii, angles, values)
+        arrows = arrowhead_paths(centers, directions, float(radii[-1]) * 0.035)
+        glyphs = arrows.reshape(-1, 4, 2)[:, :3]
+        ax.add_collection(LineCollection(glyphs, colors='white', linewidths=2.8, zorder=7))
+        ax.add_collection(LineCollection(glyphs, colors='#202020', linewidths=1.1, zorder=8))
 
     def _draw_geometry_edges(self, ax, machine_params):
         first_patch = len(ax.patches)

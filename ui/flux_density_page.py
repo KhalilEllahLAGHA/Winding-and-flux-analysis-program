@@ -218,7 +218,8 @@ class FluxDensityHeatmapUI:
         window.flux_contour_count.setValue(DEFAULT_CONTOUR_COUNT)
         window.flux_contour_count.setToolTip(
             'Equally spaced magnetic vector-potential contours. '
-            'Each interval represents the same magnetic flux.')
+            'Each interval represents the same magnetic flux. '
+            'Arrows follow B, from N to S across the air gap.')
         window.flux_contour_count.setFixedWidth(88)
         window.flux_contour_count.valueChanged.connect(self._schedule_field_redraw)
         display_controls.addWidget(window.flux_contour_count)
@@ -384,8 +385,10 @@ class FluxDensityHeatmapUI:
             self._update_animation_interval)
         settings_layout.addRow("Frame Interval:", window.flux_anim_interval_spin)
 
-        window.flux_anim_symmetry_check = QCheckBox("Loop over 180° electrical")
+        window.flux_anim_symmetry_check = QCheckBox("Short heatmap loop (180°)")
         window.flux_anim_symmetry_check.setChecked(True)
+        window.flux_anim_symmetry_check.setToolTip(
+            'Flux-line views use 360° to preserve the direction and pole polarity.')
         settings_layout.addRow("", window.flux_anim_symmetry_check)
 
         layout.addWidget(settings_group)
@@ -858,7 +861,8 @@ class FluxDensityHeatmapUI:
                 if info and info['count']:
                     window.flux_contour_label.setText(
                         f"{info['count']} contours  ·  Equal flux interval "
-                        f"{info['flux_step_wb'] * 1e6:.2f} µWb")
+                        f"{info['flux_step_wb'] * 1e6:.2f} µWb\n"
+                        "Arrows follow B: N → S across the air gap.")
                 elif info:
                     window.flux_contour_label.setText('Zero magnetic flux')
                 else:
@@ -899,8 +903,9 @@ class FluxDensityHeatmapUI:
 
     def _get_animation_span_degrees(self):
         # Wt is ELECTRICAL: its period does not depend on the pole-pair count.
-        # |B| and undirected Az contours repeat after 180 electrical degrees.
-        return 180.0 if self.main_window.flux_anim_symmetry_check.isChecked() else 360.0
+        window = self.main_window
+        heatmap = window.flux_anim_visualization_type.currentText() == 'B Heatmap'
+        return 180.0 if heatmap and window.flux_anim_symmetry_check.isChecked() else 360.0
 
     def _animation_input_signature(self):
         window = self.main_window
@@ -1039,7 +1044,9 @@ class FluxDensityHeatmapUI:
         self._show_animation_view()
         self.main_window.flux_anim_pg_widget.show_angle(angle)
         self.main_window.flux_anim_info_label.setText(
-            f'Wt={angle:.1f}° | {self.animation_span_degrees:.0f}° loop | continuous playback')
+            f'Wt={angle:.1f}° | {self.animation_span_degrees:.0f}° loop'
+            + (' | B direction'
+               if self.animation_mode != 'B Heatmap' else ' | continuous playback'))
 
     def _render_animation_frame(self, frame_index):
         if self.animation_frames and self.animation_model is not None:

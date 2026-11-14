@@ -28,7 +28,7 @@ class AnimationPreparation(QThread):
 
 
 class FieldAnimationView(pg.GraphicsLayoutWidget):
-    """Update one raster and one contour path; never rebuild a Matplotlib figure."""
+    """Update fixed raster/path items without rebuilding a Matplotlib figure."""
 
     def __init__(self):
         super().__init__()
@@ -51,6 +51,12 @@ class FieldAnimationView(pg.GraphicsLayoutWidget):
                                          connect='finite', antialias=True)
         self.plot.addItem(self.contours)
         self.plot.addItem(self.geometry)
+        self.arrow_halo = pg.PlotCurveItem(pen=pg.mkPen('#ffffff', width=3.2),
+                                          connect='finite', antialias=True)
+        self.arrows = pg.PlotCurveItem(pen=pg.mkPen('#202020', width=1.3),
+                                      connect='finite', antialias=True)
+        self.plot.addItem(self.arrow_halo)
+        self.plot.addItem(self.arrows)
         self.color_map = pg.ColorMap(np.linspace(0, 1, 256),
                                      colormaps['turbo'](np.linspace(0, 1, 256), bytes=True))
         self.colorbar = pg.ColorBarItem(values=(0, 1), colorMap=self.color_map,
@@ -81,12 +87,16 @@ class FieldAnimationView(pg.GraphicsLayoutWidget):
             self.image.setLookupTable(None)
             self.image.setImage(model.material_image, autoLevels=False, levels=(0, 255))
         self.contours.setVisible(mode != 'B Heatmap')
+        self.arrow_halo.setVisible(mode != 'B Heatmap')
+        self.arrows.setVisible(mode != 'B Heatmap')
 
     def show_angle(self, angle):
         if self.mode != 'Flux Lines':
             self.image.setImage(self.model.image_at(angle), autoLevels=False,
                                  levels=(0, self.model.color_max))
         if self.mode != 'B Heatmap':
-            paths = self.model.contours_at(angle, self.contour_count)
+            paths, arrows = self.model.contour_frame_at(angle, self.contour_count)
             self.contours.setData(paths[:, 0], paths[:, 1])
+            self.arrow_halo.setData(arrows[:, 0], arrows[:, 1])
+            self.arrows.setData(arrows[:, 0], arrows[:, 1])
         self.plot.setTitle(f'{self.mode} · Wt = {angle:.1f}°', color='#222222', size='11pt')
