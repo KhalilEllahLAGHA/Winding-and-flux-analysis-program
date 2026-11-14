@@ -1,477 +1,683 @@
-# Dolomites / Koil
-# Winding generation and multiphase field studies
+# Bobinages multiphasés
+# Génération algorithmique et analyse du champ magnétique
 
-> A detailed logical account of the implemented algorithm, followed by three reproducible winding, MMF and magnetic-field studies.
+> Rapport de méthode et études numériques : connexions du bobinage, force magnétomotrice, réseau de réluctances et visualisation du champ.
 
-**LAGHA Khalil Ellah**
+**Réalisé par LAGHA Khalil Ellah**
 
-13 November 2026
+Révision du 14 novembre 2026
 
-Application, integration and numerical visualisation: LAGHA Khalil Ellah.
-Upstream winding generation: Luigi Alberti and the Dolomites contributors, through the Koil module.
+## Résumé
 
-[GitHub project - Winding and flux analysis program](https://github.com/KhalilEllahLAGHA/Winding-and-flux-analysis-program)
+J'ai développé une application permettant de construire un bobinage multiphasé, de calculer sa force magnétomotrice et d'étudier le champ magnétique obtenu dans une section de machine électrique. J'ai intégré une méthode de l'étoile des encoches issue des références [1, 2], puis relié les connexions physiques à un modèle magnétique bidimensionnel par réseau de réluctances.
 
-[Author's GitHub](https://github.com/KhalilEllahLAGHA)
+Ce rapport présente d'abord les algorithmes sous forme d'entrées, de sorties, d'étapes de calcul et de contrôles, sans exemple numérique. J'applique ensuite la démarche à trois configurations : un bobinage triphasé, un bobinage diphasé et un bobinage pentaphasé à 45 encoches, 8 pôles et un pas de 5 encoches. Chaque étude comprend la répartition du bobinage statorique, la FMM, les lignes de flux et l'induction magnétique.
 
-[Portfolio project, figures and two flux videos](https://khalilellahlagha.github.io/projects/winding-flux-analysis.html)
+L'analyse distingue le nombre de phases électriques, le nombre de pôles recherché et les composantes spatiales présentes dans le champ. Le cas pentaphasé étudié présente un couplage élevé avec son ordre de travail à huit pôles, tout en conservant des composantes parasites résiduelles. Cette conclusion est établie à partir des connexions, des courants et du spectre spatial.
 
-## Reading order
+## Organisation
 
-**Part I** explains the algorithm symbolically, without a numerical example: input checks; electrical star; signed phase sectors; physical coils; matrix validation; MMF; polar reluctance network; flux density and animation.
+- **Partie I :** formulation générale et huit algorithmes de calcul, sans exemple.
+- **Partie II :** application détaillée aux trois configurations et figures associées.
+- **Partie III :** contrôle des cinq phases, analyse harmonique et synthèse.
+- **Références :** sources de la méthode et du générateur intégré.
 
-**Part II** applies the full calculation to the normal three-phase default, a two-phase winding and the requested five-phase, 45-slot, 8-pole, span-11 winding. Each case includes its phase/resultant MMF and its flux-path/density figure.
+[Code source de l'application](https://github.com/KhalilEllahLAGHA/Winding-and-flux-analysis-program)
 
-**Part III** explains the five-phase rotating-field deformation, the limits of an efficiency interpretation, reproduction and source credits.
-
-> The figures are computed from the application's winding matrix and magnetic solver. The videos recombine signed solved fields; they are not a rotated picture of one field snapshot.
+[Présentation du projet et vidéos du champ](https://khalilellahlagha.github.io/projects/winding-flux-analysis.html#flux-videos)
 
 <!-- pagebreak -->
 
-# Part I - Algorithm, without an example
+# Partie I - Formulation générale
 
-## 1. Define the inputs and conventions
+## Objectif et notations
 
-The generator takes a slot count Q, an even total pole count P, a phase count m, a coil span y in slots, and a single- or double-layer choice. A phase is a separate winding circuit; a signed conductor represents the reference orientation of one of its coil sides. Positive and negative signs do not prescribe the instantaneous direction of a sinusoidal current.
+L'objectif est de transformer des paramètres géométriques et électriques en une distribution spatiale de conducteurs, puis en une distribution d'induction magnétique. Je conserve une seule matrice de connexions pour le dessin, la FMM et l'excitation du modèle magnétique, afin de garantir leur cohérence.
 
-| Quantity | Definition | Role |
+| Symbole | Définition | Unité ou domaine |
 | --- | --- | --- |
-| Q | Integer slot count, at least 2 | Number of matrix columns |
-| P, p | Total poles P; pole pairs p=P/2 | Mechanical-to-electrical angle conversion |
-| m | Phase count, 1 to 26 in this interface | Phase sectors and matrix row count |
-| y | Integer coil span, 1 to Q | Distance from coil start to return |
-| N, I_peak | Turn multiplier and peak-current setting | Excitation amplitude |
-| φ=Wt | Electrical excitation angle | Time position within the sinusoidal cycle |
+| Q | Nombre total d'encoches | Entier positif |
+| P, p | Nombre total de pôles ; p=P/2 paires de pôles | P pair |
+| m | Nombre de phases électriques | Entier positif |
+| y | Pas entre départ et retour d'une bobine | Encoches |
+| C, W | Matrice physique ; matrice complète par phase | Coefficients signés |
+| N | Multiplicateur de spires des côtés de bobine | Sans dimension |
+| I_crête, φ | Amplitude du courant ; angle électrique | A ; rad |
+| F, Φ, B | FMM ; flux ; induction magnétique | A·tour ; Wb ; T |
 
-The app keeps total poles in the interface and converts to pole pairs only for Dolomites. Its default span is the integer part of the pole pitch, bounded below by one slot. If single layer is selected, an even requested span is reduced by one to obtain an odd throw. The resulting value is displayed in the controls.
+Une phase désigne un circuit électrique alimenté par un courant déterminé. Un pôle décrit la structure spatiale du champ. Un harmonique spatial d'ordre mécanique n possède 2n pôles. L'ordre de travail recherché est p. Ces grandeurs restent distinctes pendant toute la chaîne de calcul.
 
-## 2. Establish the logical calculation chain
+## Chaîne fonctionnelle
 
 ```text
-Inputs and dimensional checks
-  -> periodicity and initial feasibility
-  -> electrical star of slot vectors
-  -> signed phase sectors
-  -> physical coil start/return pairs
-  -> connection matrix and final balance checks
-  -> phase currents and tooth/slot MMF
-  -> polar mesh, reluctances and impressed MMF sources
-  -> magnetic potential solve and branch fluxes
-  -> flux-density maps, equal-Az contours and animation
+Paramètres du bobinage
+  -> validation et périodicité
+  -> étoile des encoches et secteurs de phase
+  -> connexions des départs et des retours
+  -> matrice physique et contrôles d'équilibrage
+  -> courants et force magnétomotrice spatiale
+  -> maillage et réluctances élémentaires
+  -> potentiels magnétiques et flux de branche
+  -> induction, lignes de flux et animation
 ```
 
-The first six operations define the winding. The remaining operations use that same winding as the source of the magnetic calculation. The drawing is derived from the matrix, avoiding a separate visual assignment that could disagree with the numerical model.
-
-The implemented winding source is the pinned Dolomites Koil module [1]. Its star and coil-population logic are retained. The application's adapter corrects periodic sector membership and adds explicit physical and phase-balance validation.
+Les algorithmes décrivent l'implémentation utilisée. Le modèle magnétique suppose des perméabilités imposées et une géométrie fixe. Il permet l'étude du champ et de ses composantes spatiales. Le rendement demande des modèles complémentaires de pertes et de puissance mécanique.
 
 <!-- pagebreak -->
 
-# Electrical star and initial feasibility
+# Algorithme 1 - Valider les paramètres
 
-## 3. Check machine periodicity
+## Entrées, sorties et étapes
 
-Let t be the greatest common divisor of Q and p. It describes repetition in the electrical slot star. Define h as the number of distinct spokes per phase:
+**Entrées :** Q, P, m, pas y demandé et nombre de couches. **Sorties :** paramètres normalisés, p, périodicité t, indicateurs h et q, ou motif de rejet.
 
-```math
-t=\gcd(Q,p),\qquad h=\frac{Q}{m t},\qquad q=\frac{Q}{m P}.
+```text
+1. Vérifier que Q, P, m et y sont des entiers admissibles.
+2. Exiger Q >= 2, P >= 2 et P pair.
+3. Dans l'interface, limiter m à l'intervalle [1, 26].
+4. Exiger 1 <= y <= Q ; déterminer le pas par défaut si nécessaire.
+5. En simple couche, remplacer un pas pair par y - 1.
+6. Calculer p = P/2 et t = PGCD(Q, p).
+7. Calculer h = Q/(m*t) et q = Q/(m*P).
+8. Rejeter la configuration si h n'est pas entier.
+9. Si m est pair, exiger également que h soit pair.
+10. En simple couche, exiger Q pair.
+11. Transmettre les paramètres validés à l'algorithme suivant.
 ```
 
-Dolomites requires h to be an integer. When m is even, h must also be even. For single layer, Q must be even. These checks are preliminary: the selected throw must still produce complete, balanced physical coils. The slots-per-pole-per-phase quantity q can be fractional; a fractional q alone does not make a winding invalid.
+Le nombre de pôles affiché dans l'interface est P. La conversion en paires de pôles est effectuée pour les calculs électriques. Si aucun pas n'est fourni, je prends la partie entière du pas polaire, avec une borne minimale d'une encoche.
 
-## 4. Construct one electrical vector for each slot
-
-The electrical angle between adjacent physical slots is α_se. The spacing of distinct star directions is α_star. A common reference offset ε is applied before assigning sectors:
+## Sens des conditions
 
 ```math
-\alpha_{se}=\frac{2\pi p}{Q},\qquad \alpha_{star}=\frac{2\pi t}{Q},\qquad
+p=\frac{P}{2},\qquad t=\gcd(Q,p),\qquad
+h=\frac{Q}{mt},\qquad q=\frac{Q}{mP}.
+```
+
+La périodicité t traduit la répétition des directions électriques dans l'étoile. Le nombre de directions distinctes est Q/t ; h exprime leur répartition par phase. Les conditions sur h proviennent de la méthode intégrée [1].
+
+Le quotient q représente le nombre d'encoches par pôle et par phase. Il peut être fractionnaire : une valeur non entière n'entraîne pas, à elle seule, le rejet du bobinage.
+
+Ces conditions sont préliminaires. Elles ne garantissent pas que le pas choisi remplit correctement les encoches ou produit un harmonique de travail utile. Les connexions réellement assemblées sont contrôlées ensuite. Une configuration incompatible est signalée explicitement ; le nombre de couches n'est pas modifié silencieusement.
+
+<!-- pagebreak -->
+
+# Algorithme 2 - Construire l'étoile
+
+## Entrées et sorties
+
+**Entrées :** Q, p, m et t. **Sortie :** direction électrique et secteur de phase signé de chaque encoche physique s.
+
+Je distingue l'écart électrique entre encoches successives, α_se, et l'écart entre directions distinctes, α_étoile :
+
+```math
+\alpha_{se}=\frac{2\pi p}{Q},\qquad \alpha_{etoile}=\frac{2\pi t}{Q},\qquad
 \theta_s=((s-1)\alpha_{se}+\varepsilon)\bmod 2\pi.
 ```
 
-The slot index s is one-based. Each vector keeps that original physical slot number. Several slots may have the same electrical direction; they remain distinct physical slots. No mechanical slot is moved. The offset ε sets the reference placement of the star relative to the phase sectors; it is not a rotor displacement or the excitation angle φ.
+Le décalage ε positionne l'étoile relativement aux frontières des secteurs. Il s'agit d'une référence électrique, et non d'un déplacement du rotor. Les règles sont les suivantes [1] :
 
-Koil selects ε with these exact rules, after the initial feasibility check:
-
-| Phase-count parity | Condition | Reference offset ε |
+| Parité de m | Condition | Valeur de ε |
 | --- | --- | --- |
-| Odd m | h=1 or h=2 | π/(2m) |
-| Odd m | h>2 and h even | α_star/2 |
-| Odd m | h>2 and h odd | α_star/4 |
-| Even m | h=2 | 0 |
-| Even m | h>2 and h/2 even | α_star/4 |
-| Even m | h>2 and h/2 odd | α_star/2 |
+| Impair | h=1 ou h=2 | π/(2m) |
+| Impair | h>2 et h pair | α_étoile/2 |
+| Impair | h>2 et h impair | α_étoile/4 |
+| Pair | h=2 | 0 |
+| Pair | h>2 et h/2 pair | α_étoile/4 |
+| Pair | h>2 et h/2 impair | α_étoile/2 |
 
-All calculations use radians internally. Angles are wrapped to a full electrical revolution. This construction encodes the slot/pole relationship before coil connections or current amplitudes are introduced.
+## Construction et affectation des secteurs
+
+Pour la phase k, comptée à partir de zéro, le secteur positif est centré en γ_k ; son secteur négatif est décalé de π. Chaque secteur possède une largeur π/m.
+
+```math
+\delta_k^{impair}=\frac{2\pi k}{m},\qquad
+\delta_k^{pair}=\frac{\pi k}{m},\qquad
+\gamma_k=\frac{\pi}{2}+\delta_k.
+```
+
+```text
+1. Déterminer epsilon avec le tableau.
+2. Pour chaque s, calculer theta_s et le ramener modulo 2*pi.
+3. Construire les secteurs positif et négatif de chaque phase.
+4. Calculer la distance périodique depuis leur borne inférieure.
+5. Inclure la borne inférieure et exclure la borne supérieure.
+6. Affecter à s une phase k et un signe de référence sigma.
+```
+
+Cette règle semi-ouverte évite les doubles affectations et traite les secteurs traversant l'origine. Une tolérance de 1e-10 rad traite les valeurs proches de zéro ou d'un tour complet. Les vecteurs conservent leurs numéros physiques, même lorsque plusieurs encoches partagent une direction électrique.
 
 <!-- pagebreak -->
 
-# Phase sectors and physical coils
+# Algorithme 3 - Former les bobines
 
-## 5. Create the signed phase sectors
+## Entrées et sorties
 
-For zero-based phase index k, Koil uses these phase offsets and positive-sector centres:
+**Entrées :** affectations des encoches, pas y et nombre de couches. **Sorties :** liste des bobines et matrice physique signée C.
 
-```math
-\delta_k^{odd}=\frac{2\pi k}{m},\qquad \delta_k^{even}=\frac{\pi k}{m},
-\qquad \gamma_k=\frac{\pi}{2}+\delta_k.
-```
-
-Each positive sector has width π/m and is centred on γ_k. Its negative sector is shifted by π. This is Dolomites' even-phase convention; other machine winding topologies may use another phase arrangement. The current offsets used later match the generated winding axes.
-
-For each slot vector, the adapter computes its modular distance from each sector's lower boundary. A sector includes its lower boundary and excludes its upper boundary. Values numerically close to a full turn or zero are snapped to zero using a 1e-10 radian tolerance. This periodic half-open rule assigns a boundary spoke once and handles sectors that cross the angular origin. It repairs omissions caused by the upstream Python strict comparisons.
-
-## 6. Connect the coil start to its return
-
-Sector membership gives a phase k and a reference sign σ, positive or negative. The return position is found with circular slot indexing:
+Une bobine appartient à une phase unique. Si son départ est en s avec le signe σ, son retour est en r(s) avec le signe opposé. Le retour conserve la phase du départ ; son affectation n'est pas recalculée indépendamment à partir de son propre secteur.
 
 ```math
 r(s)=((s-1+y)\bmod Q)+1.
 ```
 
-The coil starts with sign σ in slot s and returns with sign -σ in slot r(s), in the same phase. The return is not independently reassigned from the sector at its destination. This preserves the physical coil connection when a shortened or extended throw puts its return beside another phase's start.
+## Étapes de connexion
 
-- **Double layer:** every slot starts a coil in the top layer; its return is placed in the bottom layer. The total number of coils is Q.
-- **Single layer:** only odd one-based slots start coils. The odd span places their returns in even slots. The total number of coils is Q/2 when the layout passes the final checks.
+```text
+1. Initialiser C à zéro, avec Q colonnes.
+2. Prévoir m lignes en simple couche, 2*m en double couche.
+3. Parcourir les encoches de départ affectées aux phases.
+4. En simple couche, conserver seulement les départs impairs.
+5. Calculer le retour r(s) avec bouclage périodique.
+6. Ajouter sigma au départ dans la ligne de sa phase.
+7. Soustraire sigma au retour de la même phase.
+8. En double couche, placer les retours dans les lignes du bas.
+9. Conserver explicitement m et les couches avec la matrice.
+```
 
-## 7. Store the physical connection matrix
+| Type | Lignes de C | Occupation physique |
+| --- | --- | --- |
+| Simple couche | Une ligne par phase | Un côté de bobine par encoche |
+| Double couche | Phases du haut, puis phases du bas | Deux côtés par encoche |
 
-The matrix C has Q columns. Single layer has m rows, one for each phase. Double layer has 2m rows: all top phase rows, followed by all bottom phase rows. For each coil, add σ at its start and subtract σ at its return, in the appropriate phase/layer row. New upstream coils use a unit signed conductor count. Entries are 0, +1 or -1 for the accepted layouts.
+Les coefficients +1 et -1 donnent une orientation de référence. Le courant instantané est appliqué ultérieurement. Zéro indique l'absence de conducteur pour la phase et la couche considérées.
 
-Explicit phase-count and layer metadata accompany C. A row count alone is insufficient: it can represent different phase/layer combinations. The same matrix supplies conductor colours/polarities in the drawing and the winding sources used in MMF and field calculations.
+En double couche, chaque encoche fournit un départ et reçoit un retour : le nombre total de bobines est Q. En simple couche, les départs impairs et le pas impair placent les retours dans les encoches paires ; un bobinage complet contient Q/2 bobines.
+
+Je préserve les signes physiques des deux couches sans les normaliser séparément. Le dessin des conducteurs est déduit de cette même matrice. Le nombre de lignes ne sert pas seul à inférer le nombre de phases : les métadonnées explicites évitent toute confusion entre différentes associations de phases et de couches.
 
 <!-- pagebreak -->
 
-# Final validation and winding factors
+# Algorithme 4 - Contrôler le bobinage
 
-## 8. Validate the assembled winding
+## Entrées, sorties et étapes
 
-The adapter first checks slot occupancy: the sum of absolute matrix entries in each slot must be one for single layer and two for double layer. Define the complete phase matrix W as C for single layer, or the sum of corresponding top and bottom rows for double layer.
+**Entrées :** C, m, p et couches. **Sorties :** décision de validité et facteurs du bobinage à l'ordre de travail.
 
-Each complete phase row must sum to zero, so its signed coil sides have a balanced return. The total absolute conductor count must be equal and nonzero in every phase. This checks actual populated coils, rather than relying only on the initial integer conditions.
+La matrice complète W vaut C en simple couche, ou la somme des lignes correspondantes du haut et du bas en double couche. Le nombre c_k de côtés de la phase k est calculé en additionnant leurs valeurs absolues dans les deux couches, avant compensation des signes.
 
-The working-harmonic phasor of phase k is then:
-
-```math
-z_k=\sum_{s=1}^{Q}W_{ks}\exp\left(-j\frac{2\pi p(s-1)}{Q}\right).
+```text
+1. Vérifier l'occupation de chaque encoche : 1 ou 2 côtés.
+2. Former la matrice complète W par phase.
+3. Vérifier que chaque ligne de W possède une somme nulle.
+4. Vérifier des nombres de conducteurs égaux et non nuls par phase.
+5. Calculer le vecteur complexe z_k à l'ordre de travail p.
+6. Vérifier amplitude et déphasage relativement à la phase 0.
+7. Rejeter une construction incomplète ou déséquilibrée.
+8. Calculer les facteurs de pas, de distribution et de bobinage.
 ```
 
-Unless W cancels identically, each z_k must be nonzero and its ratio to the first phase must agree with the required phase axis:
+## Axes de phase et facteurs
 
 ```math
+z_k=\sum_{s=1}^{Q}W_{ks}\exp\left(-j\frac{2\pi p(s-1)}{Q}\right),\qquad
 \frac{z_k}{z_0}=\exp(-j\delta_k).
 ```
 
-The implementation checks this numerically with absolute and relative tolerances of 1e-8. An identically cancelled W is accepted as a zero-excitation layout. A feasible flag therefore identifies a structurally valid winding, not an optimised machine or a guarantee of a strong useful field.
-
-## 9. Evaluate the working-harmonic winding factor
-
-Let c_k be the absolute conductor count of complete phase k. For double layer this is the sum of abs(C_top) and abs(C_bottom) over slots, counting both physical coil sides even where their signed contributions cancel. The factor for the prescribed working pole count is the average normalised conductor phasor magnitude:
+La dernière relation vérifie l'égalité des amplitudes et l'écartement des axes, avec des tolérances absolue et relative de 1e-8. Si W est identiquement nulle, la construction est conservée comme cas d'excitation nulle. Sinon, un vecteur de travail nul est rejeté.
 
 ```math
 k_w=\frac{1}{m}\sum_{k=0}^{m-1}\frac{|z_k|}{c_k},\qquad
-k_p=\left|\sin\left(\frac{\pi P y}{2Q}\right)\right|.
+\beta=\frac{2\pi p y}{Q},\qquad
+k_p=\left|\sin\left(\frac{\beta}{2}\right)\right|.
 ```
 
-The electrical coil span is β=2πpy/Q. The pitch factor uses half of this span: k_p=abs(sin(β/2)). Where k_p is nonzero, the distribution factor is k_d=k_w/k_p. The model has no skew, so k_s=1. For a fully cancelling pitch, the distribution of coil starts is evaluated separately and k_w is zero.
+Le facteur de distribution est k_d=k_w/k_p lorsque k_p est non nul. Le modèle est sans inclinaison des encoches : le facteur d'inclinaison est un. En cas de compensation complète du pas, la distribution des départs est évaluée séparément et k_w est nul.
 
-These factors describe coupling to the selected working spatial harmonic. A small k_w can coexist with strong components at other pole counts. To understand field quality, the study also examines the spatial MMF and air-gap flux-density spectra.
-
-Valid generated matrices are cached by slots, poles, layers, effective span and phase count. Callers receive a copy, so changing a drawing or calculation cannot alter the cached winding.
+Ces facteurs caractérisent le couplage avec l'ordre de travail p. L'équilibrage des phases ne garantit pas une FMM sinusoïdale pure. Je complète donc ce contrôle par le spectre spatial de la FMM et de l'induction dans l'entrefer.
 
 <!-- pagebreak -->
 
-# From the winding to its MMF
+# Algorithme 5 - Calculer la FMM
 
-## 10. Apply the phase currents
+## Entrées et sorties
 
-The instantaneous current in phase k is sinusoidal, using the same δ_k as the phase-sector construction:
+**Entrées :** matrice physique, N, amplitude du courant et angle φ. **Sorties :** ampères-tours par encoche, FMM par phase et résultante.
+
+Les courants utilisent les déphasages δ_k des axes de bobinage :
 
 ```math
-i_k(\varphi)=I_{peak}\sin(\varphi+\delta_k).
+i_k(\varphi)=I_{crete}\sin(\varphi+\delta_k).
 ```
 
-The use of sine in this app and the default cosine convention in upstream Koil differ by a common time-origin shift. The current setting is a peak value. N is the application's coil-side turn multiplier; it is not automatically the number of series turns in the entire phase.
-
-The app's excitation bookkeeping gives these signed slot ampere-turns:
+N représente le multiplicateur de spires des côtés de bobine utilisé par le modèle, et non automatiquement le total des spires en série d'une phase. En double couche, j'utilise la convention de partage du courant configuré entre les deux couches :
 
 ```math
-NI_s^{single}=N\sum_k C_{ks}i_k,\qquad
+NI_s^{simple}=N\sum_k C_{ks}i_k,\qquad
 NI_s^{double}=\frac{N}{2}\sum_k W_{ks}i_k.
 ```
 
-**Model convention:** double-layer calculations split the configured current equally across layers. This is the convention implemented in this application, not a universal rule that every physical double-layer coil carries half the phase current. Its values must be interpreted with the actual series/parallel connections when applying the model to a manufactured machine.
+Cette division par deux est une convention d'excitation de l'application. Pour une machine construite, elle doit être rapprochée des connexions série/parallèle réelles ; elle n'est pas une propriété générale des bobinages à deux couches.
 
-## 11. Integrate the slot excitation around the teeth
+## Étapes d'intégration spatiale
 
-The total signed slot NI must sum to zero. The algorithm integrates these jumps around the circumference, then subtracts the mean to fix the arbitrary MMF reference:
+```text
+1. Calculer le courant instantané de chaque phase.
+2. Pondérer les conducteurs signés par les courants et par N.
+3. Former le total NI_s dans chaque encoche.
+4. Vérifier que la somme des NI_s sur un tour est nulle.
+5. Intégrer les sauts de FMM d'une dent à la suivante.
+6. Retirer la moyenne pour fixer la référence de FMM.
+7. Interpoler sur les régions de dent et d'encoche.
+8. Additionner les contributions des phases.
+```
 
 ```math
 F_{s+1}-F_s=NI_s,\qquad \sum_s F_s=0.
 ```
 
-Tooth s immediately precedes slot s. The resulting winding function is constant over a tooth and varies linearly across the following slot to the next tooth value. Exact tooth/slot breakpoints and closure at a complete mechanical revolution are included in the plotted profile.
+La FMM est constante dans une dent et varie linéairement dans l'encoche suivante jusqu'à la dent voisine. La fermeture périodique est imposée sur un tour mécanique. Les transitions sont incluses explicitement dans les profils, pour conserver les paliers et leurs bonnes positions.
 
-The engine first calculates phase winding functions independent of φ. Their sinusoidal factors are applied and summed to obtain the instantaneous resultant. Consequently, a phase can have a nonzero reference winding function while its instantaneous contribution vanishes at a current zero crossing.
-
-For separate top/bottom plots, any nonzero mean in an individual layer is removed; the removed means cancel in the complete phase. The field solve uses the complete physical winding excitation. Cached phase functions make changes of φ and MMF animation inexpensive without changing the selected winding.
+Je mémorise les fonctions spatiales de phase indépendantes de φ. Un nouvel angle modifie leurs pondérations sinusoïdales, sans reconstruire le bobinage. Une contribution peut être nulle à un passage par zéro du courant, tout en participant au champ à d'autres instants.
 
 <!-- pagebreak -->
 
-# Polar mesh and magnetic-network solve
+# Algorithme 6 - Construire le réseau
 
-## 12. Construct the machine mesh and reluctances
+## Entrées, sorties et étapes
 
-The cross-section contains rotor iron, air gap, alternating stator teeth/slots and stator yoke. Radial bands are subdivided and combined with periodic angular divisions. The default slot opening is half the slot pitch. Fractional default angles retain precision; equal slot/tooth arcs use a stable mesh base. Excessive requested meshes are rejected before allocation.
+**Entrées :** dimensions, matériaux, longueur active et réglages de maillage. **Sorties :** cellules polaires, voisinages, réluctances et sources distribuées.
 
-For a polar cell with inner/outer radii a,b, centre c=(a+b)/2, angular width Δθ, axial length L and permeability μ=μ0 μ_r, the half-cell reluctances are:
+Je subdivise la section en rotor, entrefer, bande des dents et encoches, puis culasse. Les divisions radiales sont croisées avec des divisions angulaires périodiques. Les matériaux sont affectés selon la position physique des cellules.
 
-```math
-R_{up}=\frac{\ln(b/c)}{\mu L\Delta\theta},\quad
-R_{down}=\frac{\ln(c/a)}{\mu L\Delta\theta},\quad
-R_{left}=R_{right}=\frac{\Delta\theta}{2\mu L\ln(b/a)}.
+```text
+1. Vérifier l'emboîtement des rayons et la place de la culasse.
+2. Calculer le pas d'encoche et les ouvertures angulaires.
+3. Choisir les divisions aux limites des matériaux.
+4. Subdiviser chaque bande radiale.
+5. Former les cellules et attribuer les matériaux.
+6. Relier les voisins, avec bouclage angulaire.
+7. Calculer les demi-réluctances entre centre et faces.
+8. Introduire la FMM dans les cellules de la bande source.
 ```
 
-All lengths in these equations are metres and angles are radians. A branch between neighbouring cell centres contains both adjacent half-cell reluctances. Its conductance is the reciprocal of their sum. Angular neighbours wrap around the circumference; the shaft and outer boundaries have zero normal flux.
-
-## 13. Map the winding MMF into physical source cells
-
-In the slot/tooth source band, F(θ) is distributed through its radial thickness. For source-band bounds R_i,R_o, the radial half-cell source weights are:
+Pour une cellule de rayons a et b, de centre c=(a+b)/2, de largeur Δθ, de longueur L et de perméabilité μ=μ0 μ_r :
 
 ```math
-w_{up}=\frac{b^2-c^2}{R_o^2-R_i^2},\quad
-w_{down}=\frac{c^2-a^2}{R_o^2-R_i^2},\quad
-f_{up}=-F(\theta)w_{up},\quad f_{down}=-F(\theta)w_{down}.
+R_{haut}=\frac{\ln(b/c)}{\mu L\Delta\theta},\quad
+R_{bas}=\frac{\ln(c/a)}{\mu L\Delta\theta},\quad
+R_{gauche}=R_{droite}=\frac{\Delta\theta}{2\mu L\ln(b/a)}.
 ```
 
-The radial signs follow the solver's positive-radial source convention. Circumferential impressed MMF is zero. Other material bands contain no winding source. This distributes the actual tooth/slot winding function rather than applying one arbitrary concentrated source to every layer.
+Les longueurs de ces équations sont en mètres et les angles en radians. Une branche entre deux centres comporte la somme des demi-réluctances voisines. Les limites intérieure et extérieure imposent un flux normal nul.
 
-## 14. Solve the magnetic-potential system
+## Répartition des sources
 
-Each cell enforces flux continuity. For conductances g_ij, the sparse matrix has diagonal sum(g_ij) and off-diagonal -g_ij. The right-hand side contains the signed divergence of source-driven branch flux. One potential is fixed as a reference because only differences are physical.
+Dans la bande source de bornes radiales R_i et R_o, les poids appliqués à la FMM F(θ) sont :
 
-The app uses cached sparse LU for up to 100,000 cells, with checked PCG fallback. Excitation changes reuse the network and factorisation; geometry/material changes rebuild them. Acceptance requires the full-network residual to satisfy max(10 times the requested tolerance, 1e-12). This tests algebraic solution quality. Mesh convergence, permeability realism and agreement with measurements remain separate accuracy questions.
+```math
+w_{haut}=\frac{b^2-c^2}{R_o^2-R_i^2},\quad
+w_{bas}=\frac{c^2-a^2}{R_o^2-R_i^2},\quad
+f_{haut}=-F(\theta)w_{haut},\quad f_{bas}=-F(\theta)w_{bas}.
+```
+
+Les signes suivent la convention radiale du solveur. Les sources circonférentielles sont nulles. Hors de la bande source, aucune FMM imposée n'est ajoutée. Dans les encoches, je conserve la même interpolation spatiale que dans le calcul de FMM.
 
 <!-- pagebreak -->
 
-# Flux density, contours and animation
+# Algorithme 7 - Résoudre le champ
 
-## 15. Recover the physical field
+## Entrées et sorties
 
-Branch fluxes follow from magnetic-potential differences and the signed impressed MMF. With outward face-flux conventions, cell-centre components are reconstructed as:
+**Entrées :** réluctances et sources de FMM. **Sorties :** potentiels magnétiques, flux de branche et composantes de l'induction.
+
+La conservation du flux dans chaque cellule conduit à un système linéaire creux. Je note g_ij l'inverse de la somme des demi-réluctances d'une branche i-j. Une référence est fixée puisque le potentiel u est défini à une constante près.
 
 ```math
-B_r=\frac{\Phi_{up}-\Phi_{down}}{2c\Delta\theta L},\quad
-B_\theta=\frac{\Phi_{right}-\Phi_{left}}{2cL\ln(b/a)},\quad
+A u=b,\qquad A_{ii}=\sum_j g_{ij},\qquad A_{ij}=-g_{ij}.
+```
+
+Le second membre b contient les contributions signées des sources imposées. La structure et la factorisation de A sont conservées lorsque seule l'excitation change. Une modification de géométrie, de matériau ou de longueur entraîne leur reconstruction.
+
+```text
+1. Calculer les conductances des branches.
+2. Assembler les diagonales et les couplages de A.
+3. Former b à partir de la divergence signée des sources de flux.
+4. Fixer une référence de potentiel.
+5. Résoudre par factorisation creuse LU lorsque cela est adapté.
+6. Utiliser un gradient conjugué préconditionné en solution de repli.
+7. Contrôler le résidu sur le réseau complet.
+8. Reconstituer les flux à partir des potentiels et FMM de branche.
+9. Convertir les flux en composantes d'induction.
+```
+
+La résolution directe mise en cache est privilégiée jusqu'à 100 000 cellules. Le résidu relatif complet doit être inférieur au maximum de dix fois la tolérance demandée et 1e-12. Ce contrôle est algébrique ; il ne mesure pas l'erreur de discrétisation ou l'erreur du modèle physique.
+
+## Reconstruction de l'induction
+
+Avec les flux sortants sur les faces de cellule :
+
+```math
+B_r=\frac{\Phi_{haut}-\Phi_{bas}}{2c\Delta\theta L},\qquad
+B_\theta=\frac{\Phi_{droite}-\Phi_{gauche}}{2cL\ln(b/a)},\qquad
 |B|=\sqrt{B_r^2+B_\theta^2}.
 ```
 
-The density map colours the magnitude in tesla. A conservative planar vector potential A_z is reconstructed from the shared face fluxes. Equal-A_z contours show magnetic flux paths. With ψ=L A_z, angular differences in ψ give radial face flux and negative radial differences give circumferential face flux. Therefore adjacent contour levels carry equal planar flux L ΔA_z [3].
+L'induction est exprimée en teslas. La carte de couleur représente sa norme. Les composantes signées sont conservées pour les comparaisons, l'analyse harmonique et l'animation.
 
-Equal contour spacing applies within each frame. The plotting routine recalculates the contour interval from that frame's potential range; the interval is not held fixed through the video. Contour counts are therefore not an equal-flux comparison between figures or frames. The density colour scale is held fixed over a case's full cycle, but differs between cases; read its numerical values when comparing fields.
+<!-- pagebreak -->
 
-## 16. Generate continuous animation from two signed solutions
+# Algorithme 8 - Visualiser et animer
 
-Geometry, prescribed permeability and winding connections are fixed. Since the model is linear and all currents have a common sinusoidal excitation angle, the field at an arbitrary φ is obtained from the solved signed fields at zero and a quarter electrical cycle:
+## Lignes de flux
+
+**Entrées :** flux partagés entre cellules. **Sortie :** potentiel vecteur plan A_z et lignes de flux.
+
+Je reconstruis A_z à partir des flux du réseau. Avec ψ=L A_z, une différence angulaire de ψ donne le flux radial et une différence radiale opposée donne le flux circonférentiel. Les courbes de niveau de A_z représentent les lignes de flux [3].
+
+```text
+1. Reconstituer les flux communs aux faces voisines.
+2. Ajuster le potentiel vecteur avec les conditions périodiques.
+3. Choisir des niveaux de A_z régulièrement espacés.
+4. Tracer les contours et superposer la norme de B.
+```
+
+Dans une image, deux niveaux consécutifs représentent le même incrément de flux L ΔA_z. L'intervalle est recalculé selon l'étendue du potentiel de chaque image. Le nombre de lignes ne sert donc pas à comparer directement les flux entre images ou configurations.
+
+## Animation par deux solutions signées
+
+À géométrie et perméabilités fixes, le modèle est linéaire. Pour une excitation sinusoïdale multiphasée :
 
 ```math
 \mathbf{B}(\varphi)=\mathbf{B}(0)\cos\varphi+
 \mathbf{B}(\pi/2)\sin\varphi.
 ```
 
-A_z uses the same superposition. Magnitude is calculated after the signed components are combined. Interpolating magnitude maps instead would discard field direction and give an incorrect result. The two-basis method also preserves simultaneous spatial harmonics; it does not assume the entire field rotates rigidly.
+L'identité sin(φ+δ)=sin(δ)cos(φ)+cos(δ)sin(φ) regroupe les contributions de toutes les phases dans deux coefficients temporels. **Deux solutions de référence ne signifient pas deux phases d'alimentation.** Les m phases sont toutes prises en compte dans les deux résolutions de référence.
 
-Preparation runs in a cancellable background worker. Playback updates magnitude and contours with fixed cycle limits and elapsed-time timing. The full signed excitation period is one electrical revolution; magnitude and undirected contour patterns repeat after half a revolution.
+```text
+1. Résoudre à phi=0, avec toutes les phases.
+2. Résoudre à phi=pi/2, avec toutes les phases.
+3. Combiner B et A_z signés à l'angle voulu.
+4. Calculer ensuite la norme et les contours.
+5. Actualiser les courants de phase et l'angle affichés.
+6. Conserver l'échelle d'induction pendant le cycle d'un cas.
+```
 
-## 17. Interpret the model's scope
-
-This is a two-dimensional, fixed-permeability magnetostatic sequence on a stationary machine geometry. It calculates field distributions and winding harmonic content. Saturation, rotor motion, induced rotor currents, conductor resistance, iron-loss laws, shaft power and thermal behaviour are not modelled. The videos slow an electrical excitation sweep for inspection; their playback speed is not a simulated mechanical rotor speed. A visually distorted rotating field can diagnose undesirable spatial components, but requires an appropriate torque/loss model before efficiency can be quantified.
+La superposition s'applique avant le calcul de la norme. La vidéo montre un balayage électrique ralenti dans une géométrie fixe ; elle ne simule pas la dynamique mécanique du rotor.
 
 <!-- pagebreak -->
 
-# Part II - Shared study conditions
+# Partie II - Conditions des études
 
-All three studies use the implemented double-layer winding and the same prescribed material, excitation and radial dimensions. Slot count, slot opening, poles, phase count and throw vary as specified. This is a winding/field demonstration, not an equal-power or equal-copper experiment.
+J'ai fixé les dimensions radiales, la longueur active, les perméabilités et les réglages d'excitation. Les nombres d'encoches, de phases et de pôles, ainsi que le pas de bobine et l'ouverture des encoches, sont précisés pour chaque étude.
 
-| Parameter | Value |
+| Paramètre commun | Valeur |
 | --- | --- |
-| Stator outer / inner radius | 69.15 / 41.25 mm |
-| Rotor outer / shaft radius | 40.25 / 18.65 mm |
-| Air gap / slot height | 1.00 / 12.60 mm |
-| Active axial length | 110 mm |
-| Prescribed iron / air relative permeability | 4000 / 1 |
-| Configured N / peak phase current | 204 / 2.8 A |
-| Effective peak current per layer, app convention | 1.4 A |
-| Slot opening | Half the slot pitch: 180°/Q |
-| Static excitation angle | φ=90° electrical |
-| Mesh | Medium: 10 radial cells per band; angular divider 3 |
-| Solver request | Automatic method; tolerance 1e-8 |
+| Rayon extérieur / intérieur du stator | 69,15 / 41,25 mm |
+| Rayon extérieur du rotor / rayon de l'arbre | 40,25 / 18,65 mm |
+| Entrefer / hauteur d'encoche | 1,00 / 12,60 mm |
+| Longueur active | 110 mm |
+| Perméabilité relative du fer / de l'air | 4000 / 1 |
+| Multiplicateur N / courant de crête configuré | 204 / 2,8 A |
+| Courant de crête par couche, convention du modèle | 1,4 A |
+| Ouverture angulaire d'encoche | Demi-pas : 180°/Q |
+| Angle des figures statiques | φ=90° électriques |
+| Maillage | 10 subdivisions radiales par bande ; diviseur angulaire 3 |
+| Tolérance demandée | 1e-8 |
 
-## How to read the case figures
+## Lecture et vérification
 
-The MMF figure shows each phase's instantaneous contribution and their resultant versus mechanical position. Its vertical unit is ampere-turn. At the chosen static angle a phase at a current zero crossing can have a flat zero contribution; this does not mean that phase has no coils.
+Les figures de FMM donnent les contributions instantanées par phase et leur somme. Les cartes associent les lignes de flux à la norme de l'induction. Les sections sont repérées en millimètres et les échelles d'induction en teslas.
 
-The field figure places equal-A_z flux contours beside the magnitude map with superimposed contours. Axes are millimetres; the colour scale is tesla. The visible stationary slot geometry helps reveal local field modulation. The fixed-permeability values, including local peaks approaching or exceeding practical iron saturation ranges, are linear-model predictions and do not include saturation feedback.
+La FMM est échantillonnée en 16 384 positions mécaniques. L'induction radiale est relevée sur l'anneau le plus proche du milieu de l'entrefer, ici à 40,7 mm ; le milieu géométrique est à 40,75 mm. Les amplitudes spectrales sont des amplitudes de crête. Un ordre mécanique n correspond à 2n pôles.
 
-Spectral results use mechanical spatial order n: an n-order wave has 2n poles. The designed working order is p=P/2. The MMF spectrum is sampled at 16,384 uniform positions. Air-gap radial B is sampled at the centres of the inner mesh ring nearest the gap midpoint, radius 40.7 mm. Snapshot coefficients describe φ=90°; two-basis coefficients also distinguish travelling directions. Finite angular resolution limits the resolved field spectrum.
+J'ai comparé la superposition à une résolution complète indépendante à φ=37°. Les maxima sur le cycle sont déduits des deux champs signés. Les résultats et les contrôles présentés correspondent à la révision du 14 novembre 2026.
 
-Each case was checked against a separate full solve at φ=37°. This checks the animation superposition independently of the plotted static angle. Full-cycle magnitude maxima are evaluated analytically from the two signed bases. No new FEMM run is claimed for these three studies.
+Il s'agit de distributions de champ sous des réglages communs, sans dimensionnement à puissance utile ou volume de cuivre identiques. Les perméabilités étant imposées, les valeurs locales élevées d'induction ne prennent pas en compte la saturation.
 
 <!-- pagebreak -->
 
-# Case 1 - Normal three-phase default
+# Étude 1 - Répartition statorique
 
-## Inputs and logical calculation
+## Trois phases, 36 encoches, 4 pôles, pas de 9
 
-| Phases m | Slots Q | Total poles P | Span y | Layers |
+![Figure 1 - Coupe du stator triphasé, exportée depuis le composant de dessin de l'application. Les couleurs et les polarités sont celles de la matrice utilisée dans le calcul.](assets/three-phase-default-winding.png)
+
+Cette représentation utilise le même dessin de stator que la présentation du projet. Chaque encoche comporte deux côtés de bobine. La couleur identifie la phase A, B ou C ; le point et la croix indiquent les orientations de référence sortante et entrante.
+
+Le conducteur le plus proche de l'alésage représente la couche haute ; le second représente la couche basse. Les liaisons frontales ne sont pas dessinées dans cette coupe : leur association est définie par le pas de neuf encoches et la matrice physique.
+
+<!-- pagebreak -->
+
+# Étude 1 - Construction et FMM
+
+## Paramètres et déroulement
+
+| Phases m | Encoches Q | Pôles P | Pas y | Couches |
 | --- | --- | --- | --- | --- |
 | 3 | 36 | 4 | 9 | Double |
 
-The pole-pair count is p=2. The periodicity is t=gcd(36,2)=2, h=36/(3×2)=6 and q=36/(3×4)=3. The adjacent electrical slot angle is 20°. Koil's offset is ε=10°, so the star begins at 10°, 30°, 50° and continues in 20° steps with repeated electrical directions. Phase offsets are 0°, 120° and 240°.
+**Étape 1 - Validation.** p=2, t=PGCD(36,2)=2, h=36/(3×2)=6 et q=36/(3×4)=3. Les conditions initiales sont satisfaites.
 
-The signed start-sector sequence over slots 1-18 is B−, A+, C−, B+, A−, C+, with three successive slots in each group; it repeats over slots 19-36. Span 9 places the return 180° electrical from its start. A start in slot 4 returns in slot 13 with the same phase and opposite polarity.
+**Étape 2 - Étoile.** L'écart électrique entre encoches est de 20° et ε=10°. Les premières directions sont 10°, 30°, 50°, puis les suivantes par pas de 20°. Les phases sont espacées de 120°.
 
-The matrix has 6 rows and 36 columns. There are 36 coils, 12 per phase, and 24 signed coil sides per complete phase. Slot occupancy and phase-axis checks pass. The full-pitch factor is k_p=1, the distribution factor is k_d=0.959795 and k_w=0.959795.
+**Étape 3 - Connexions.** Sur les encoches 1 à 18, les secteurs de départ suivent B−, A+, C−, B+, A−, C+, avec trois encoches par groupe. La séquence se répète. Le pas de neuf encoches correspond à 180° électriques ; un départ en encoche 4 revient en encoche 13 avec le signe opposé.
 
-![Figure 1. Default three-phase instantaneous phase MMFs and resultant at φ=90°. The working spatial order is n=2, corresponding to four poles.](assets/three-phase-default-mmf.png)
+**Étape 4 - Contrôles.** La matrice 6×36 décrit 36 bobines, soit 12 par phase et 24 côtés par phase complète. Les facteurs valent k_p=1 et k_d=k_w=0,959795.
 
-The working MMF wave has a peak spatial coefficient of **1568.58 A-turn**. The resultant retains a dominant four-pole shape, with smaller winding harmonics and slot transitions. Its amplitude follows the app's documented double-layer current convention.
+![Figure 2 - Contributions instantanées des trois phases et FMM résultante à φ=90°. L'ordre spatial de travail n=2 correspond à quatre pôles.](assets/three-phase-default-mmf.png)
 
-<!-- pagebreak -->
-
-# Case 1 - Flux paths and density
-
-![Figure 2. Default three-phase winding: conservative flux contours and magnetic flux-density magnitude at φ=90°. The density scale stays fixed across this case's entire electrical cycle.](assets/three-phase-default-field.png)
-
-The medium mesh contains **8,640 cells**, with 216 angular divisions and 40 radial divisions. The two field-basis solves have full-network relative residuals below 8e-15. The independent 37° full-solve comparison differs from the two-basis field by less than 1.6e-12 T at the cell centres.
-
-The intended four-pole structure is visible in the flux paths. Slot openings and finite teeth locally modify the otherwise dominant working wave. At the 40.7 mm sample radius, the n=2 radial-B component has peak amplitude **1.43877 T** at the static angle. The largest field magnitude anywhere over the full electrical cycle is **2.94584 T** in this prescribed-permeability model.
-
-The strong working component and k_w near unity show that the conductor arrangement uses the configured ampere-turns effectively for its intended four-pole MMF. This statement concerns winding coupling. It is not an efficiency percentage, and the linear iron model does not reduce high local peaks through saturation.
-
-[Watch the default-setting flux video in the portfolio](https://khalilellahlagha.github.io/projects/winding-flux-analysis.html#flux-videos)
+J'observe une résultante dominée par l'ordre de travail, d'amplitude spectrale de crête **1568,58 A·tour**. Les paliers et transitions reflètent la répartition discrète des conducteurs et l'interpolation dans les encoches.
 
 <!-- pagebreak -->
 
-# Case 2 - Two-phase winding
+# Étude 1 - Flux et induction
 
-## Inputs and logical calculation
+![Figure 3 - Configuration triphasée : lignes de flux et norme de l'induction à φ=90°. L'échelle reste fixe sur le cycle de cette configuration.](assets/three-phase-default-field.png)
 
-| Phases m | Slots Q | Total poles P | Span y | Layers |
+## Résultats numériques
+
+Le maillage comprend **8 640 cellules**, avec 216 divisions angulaires et 40 radiales. Les résidus relatifs complets sont inférieurs à 8e-15. L'écart avec la résolution indépendante à 37° reste inférieur à 1,6e-12 T aux centres des cellules.
+
+La composante radiale d'ordre n=2 dans l'entrefer atteint **1,43877 T** de crête. La norme maximale sur la section et le cycle vaut **2,94584 T** dans le modèle à perméabilités imposées.
+
+## Interprétation
+
+Les lignes de flux présentent la structure à quatre pôles. Les ouvertures d'encoche et les dents modulent localement le champ. Le facteur de bobinage proche de l'unité traduit un couplage élevé avec l'ordre spatial recherché.
+
+Les pointes locales d'induction restent des prédictions du modèle linéaire. Leur évaluation dans une machine réelle demanderait une loi de matériau non linéaire.
+
+La vidéo représente le même calcul pendant un cycle électrique. Les courants A, B et C sont affichés avec le champ pour relier l'excitation temporelle à sa distribution spatiale.
+
+[Vidéo de la configuration triphasée](https://khalilellahlagha.github.io/projects/winding-flux-analysis.html#flux-videos)
+
+<!-- pagebreak -->
+
+# Étude 2 - Répartition statorique
+
+## Deux phases, 24 encoches, 4 pôles, pas de 6
+
+![Figure 4 - Coupe du stator diphasé, issue du même composant de l'application. Seules les phases A et B sont utilisées dans cette configuration.](assets/two-phase-winding.png)
+
+Les deux couleurs identifient les deux circuits électriques. Les signes portés par les conducteurs sont des références géométriques ; les courants instantanés en quadrature sont appliqués ensuite.
+
+Les deux positions radiales d'une encoche représentent les couches haute et basse. Le retour d'une bobine est situé six encoches après son départ et conserve sa phase avec le signe opposé. Les couleurs et les signes du dessin sont vérifiés contre la matrice 4×24.
+
+<!-- pagebreak -->
+
+# Étude 2 - Construction et FMM
+
+## Paramètres et déroulement
+
+| Phases m | Encoches Q | Pôles P | Pas y | Couches |
 | --- | --- | --- | --- | --- |
 | 2 | 24 | 4 | 6 | Double |
 
-This case keeps the four-pole working field and uses a slot count compatible with the even-phase Dolomites rule. Here p=2, t=2 and h=24/(2×2)=6. Because h is even, it passes the additional even-phase condition. The slots-per-pole-per-phase value remains q=3.
+**Étape 1 - Validation.** Pour p=2, j'obtiens t=2, h=24/(2×2)=6 et q=3. Le nombre de phases est pair et la condition supplémentaire h pair est satisfaite.
 
-Adjacent slots are 30° electrical apart. Since h/2 is odd, Koil uses ε=α_star/2=15°. The phase offsets are **0° and 90°**, following the 180°/m even-phase convention. The positive sectors are 90° wide and their negative sectors are diametrically opposite.
+**Étape 2 - Étoile.** L'écart électrique est de 30°. Comme h/2 est impair, ε=15°. Les déphasages sont **0° et 90°**, selon la convention retenue pour un nombre pair de phases.
 
-Span 6 is 180° electrical, giving full-pitch coils. A coil starting in slot 1 returns in slot 7, preserving its phase and reversing its reference sign. The resulting 4×24 matrix defines 24 coils, 12 per phase, and 24 complete coil sides per phase. The final balance checks pass. The factors are k_p=1 and k_d=k_w=0.910684.
+**Étape 3 - Connexions.** Le pas de six encoches représente 180° électriques. Un départ en encoche 1 revient en encoche 7, dans la même phase et avec le signe opposé.
 
-![Figure 3. Two-phase instantaneous MMF at φ=90°. Phase B is at its current zero crossing, so its instantaneous trace is zero. It contributes at other excitation angles.](assets/two-phase-mmf.png)
+**Étape 4 - Contrôles.** La matrice 4×24 contient 24 bobines, soit 12 bobines et 24 côtés par phase. Les facteurs sont k_p=1 et k_d=k_w=0,910684.
 
-The working n=2 MMF coefficient is **990.64 A-turn peak** at this snapshot. Two quadrature phase currents still produce a travelling working wave over the cycle; the static zero crossing of one phase is not evidence of an absent rotating field.
+![Figure 5 - FMM instantanées du bobinage diphasé à φ=90°. La phase B est à son passage par zéro ; sa contribution instantanée est nulle.](assets/two-phase-mmf.png)
 
-<!-- pagebreak -->
-
-# Case 2 - Flux paths and density
-
-![Figure 4. Two-phase full-pitch winding: flux contours and density at φ=90°. Compare numerical scales rather than colour alone, since this case uses its own full-cycle colour limit.](assets/two-phase-field.png)
-
-The mesh contains **5,760 cells**, with 144 angular divisions and 40 radial divisions. Both full-network basis residuals are below 7.2e-15. The independent 37° field comparison agrees within 1.1e-12 T at the cell centres.
-
-The magnetic paths retain the prescribed four-pole working structure. The sampled near-midgap-ring n=2 radial-B coefficient is **0.85541 T peak**, while the largest magnitude over the full electrical cycle is **1.93337 T**. These field values use exactly the same N and current settings as the first case, but the phase count, number of slots/coils and angular geometry differ.
-
-The k_w of 0.910684 quantifies the working-harmonic reduction from its actual conductor distribution. A lower working field than the three-phase example cannot by itself establish lower efficiency: neither equal shaft output nor equal copper volume has been enforced, and no losses have been calculated.
-
-The even-phase treatment is carried through the whole calculation. Using a fixed three-phase 120° current sequence with this matrix would represent a different excitation and would give an incorrect interpretation. The application instead carries m=2 explicitly from the winding generator into the MMF and field calculations.
+La composante de travail n=2 atteint **990,64 A·tour** de crête. La résultante se superpose ici à A. Sur le cycle, B varie en quadrature et participe au champ tournant : une image instantanée ne suffit pas à déterminer le nombre de phases d'alimentation.
 
 <!-- pagebreak -->
 
-# Case 3 - Five phases, long coil span
+# Étude 2 - Flux et induction
 
-## Requested inputs and logical calculation
+![Figure 6 - Configuration diphasée : lignes de flux et induction à φ=90°. Cette configuration possède sa propre échelle, fixe pendant son cycle.](assets/two-phase-field.png)
 
-| Phases m | Slots Q | Total poles P | Span y | Layers |
+## Résultats numériques
+
+Le maillage comporte **5 760 cellules**, avec 144 divisions angulaires et 40 radiales. Les résidus relatifs complets sont inférieurs à 7,2e-15. L'écart avec la résolution indépendante à 37° est inférieur à 1,1e-12 T.
+
+Sur l'anneau proche du milieu de l'entrefer, la composante radiale de travail n=2 atteint **0,85541 T** de crête. La norme maximale sur la section et le cycle vaut **1,93337 T**.
+
+## Interprétation
+
+Le champ conserve la structure de travail à quatre pôles. La quadrature des courants diphasés permet sa composante tournante. Le facteur de distribution 0,910684 correspond à l'atténuation produite par les positions réelles des conducteurs.
+
+Les amplitudes diffèrent de celles du cas triphasé malgré des valeurs de N et de courant identiques. Les nombres de phases et de bobines diffèrent également. J'interprète donc ces résultats comme une comparaison de distributions de champ, et non comme un classement de rendement.
+
+Le traitement des phases est explicite : les deux courants de cette étude sont en quadrature ; aucun déphasage triphasé fixe n'est appliqué à cette matrice.
+
+<!-- pagebreak -->
+
+# Étude 3 - Répartition statorique
+
+## Cinq phases, 45 encoches, 8 pôles, pas de 5
+
+![Figure 7 - Coupe du stator pentaphasé avec un pas de cinq encoches. Les cinq couleurs A à E, les deux couches et les polarités correspondent à la matrice 10×45 du calcul.](assets/five-phase-45s-8p-span5-winding.png)
+
+Le dessin conserve exactement les 45 encoches, les 8 pôles de travail et le pas de 5. Il est produit par le composant natif de l'application, avec des annotations en français. La matrice représentée est comparée à celle du générateur avant l'export.
+
+Les cinq couleurs repèrent les phases, et non les pôles. Le décalage entre les conducteurs des couches haute et basse est imposé par les retours de bobine à cinq encoches du départ. Les polarités indiquées restent des orientations de référence indépendantes de l'instant d'excitation.
+
+<!-- pagebreak -->
+
+# Étude 3 - Construction et FMM
+
+## Paramètres et déroulement
+
+| Phases m | Encoches Q | Pôles P | Pas y | Couches |
 | --- | --- | --- | --- | --- |
-| 5 | 45 | 8 | 11 | Double |
+| 5 | 45 | 8 | 5 | Double |
 
-The requested settings are used exactly, without shortening the throw. Here p=4, t=gcd(45,4)=1, h=45/(5×1)=9 and q=45/(5×8)=9/8. This fractional-slot double-layer winding passes the initial rules. Koil uses ε=2°. Adjacent slots are 32° electrical apart; the five phase offsets are 0°, 72°, 144°, 216° and 288°.
+**Étape 1 - Validation.** p=4, t=PGCD(45,4)=1, h=9 et q=9/8. Le bobinage fractionnaire à deux couches satisfait les conditions initiales.
 
-The matrix is 10×45, with 45 coils, 9 per phase, and 18 complete coil sides per phase. A coil start in slot 1 returns in slot 12; a start in slot 40 wraps to slot 6. All five working phasor magnitudes match and their axes differ by 72°. The winding and excitation are therefore **phase-balanced**.
+**Étape 2 - Étoile.** L'écart électrique entre encoches est de 32° et ε=2°. Les déphasages sont **0°, 72°, 144°, 216° et 288°**.
 
-The long throw spans 11×32°=**352° electrical**. Its oppositely signed coil sides are almost a full electrical revolution apart, so they nearly cancel at the intended eight-pole order. The pitch factor is abs(sin(352°/2))=**0.0697565**. Although k_d=0.983831, the resulting working winding factor is only **k_w=0.0686286**.
+**Étape 3 - Connexions.** Le départ 1 revient en encoche 6 ; le départ 40 revient en encoche 45. La matrice **10×45** décrit 45 bobines : neuf bobines et 18 côtés par phase complète.
 
-![Figure 5. Exact requested five-phase winding: instantaneous phase MMFs and resultant at φ=90°. The large broad resultant structure is a spatial subharmonic, not the intended eight-pole working wave.](assets/five-phase-45s-8p-span11-mmf.png)
+**Étape 4 - Facteurs.** Le pas de cinq encoches représente **160° électriques**. Ainsi, k_p=abs(sin(80°))=**0,9848078**. Avec k_d=0,983831, le facteur de travail atteint **k_w=0,9688848**. Les cinq axes de phase sont équilibrés à l'ordre n=4.
 
-The intended n=4 MMF coefficient is **69.96 A-turn peak**. A lower spatial order n=1, corresponding to two poles, reaches **260.42 A-turn peak** - approximately **3.72 times** the intended component. Phase balance alone does not suppress this parasitic spatial component.
+![Figure 8 - FMM des cinq phases et résultante à φ=90°. L'ordre de travail n=4, correspondant à huit pôles, domine la distribution spatiale.](assets/five-phase-45s-8p-span5-mmf.png)
 
-<!-- pagebreak -->
-
-# Case 3 - Flux paths and density
-
-![Figure 6. Five phases, 45 slots, 8 poles and span 11: the field is dominated by a two-pole spatial component with additional eight-pole and slotting modulation.](assets/five-phase-45s-8p-span11-field.png)
-
-The mesh contains **10,800 cells**, with 270 angular divisions and 40 radial divisions. The basis residuals are below 2.6e-14. The independent 37° check agrees with the field superposition within 3.4e-13 T at the cell centres. Small algebraic residuals confirm the network solve; they do not remove the model's material or mesh limitations.
-
-At the 40.7 mm sample radius, the n=1 radial-B coefficient is **0.239151 T peak**, versus **0.066927 T** for the intended n=4 component. The two-pole contribution is approximately **3.57 times** the eight-pole contribution. The maximum field magnitude anywhere over the full electrical cycle is **1.02272 T**.
-
-The broad flux paths in the figure agree with this spectral diagnosis. The selected pole count identifies the intended working harmonic; it does not force the solved field to contain only that harmonic. Actual signed conductors and phase currents determine all spatial components present.
-
-Across the excitation sweep, the dominant n=1 wave and the n=4 working wave travel in opposite directions and at different mechanical angular rates. Their sum changes shape rather than behaving as one rigidly rotating eight-pole pattern. This explains the visibly irregular or asymmetric rotation in the requested video while remaining consistent with balanced phase currents.
-
-[Watch the exact five-phase flux video in the portfolio](https://khalilellahlagha.github.io/projects/winding-flux-analysis.html#flux-videos)
+Le pas est proche du pas polaire de 45/8=5,625 encoches. Son ouverture électrique est proche de 180°, ce qui explique le facteur de pas élevé. La FMM de travail atteint **987,69 A·tour** de crête ; les composantes d'autres ordres sont analysées séparément.
 
 <!-- pagebreak -->
 
-# Part III - Why the field deforms
+# Étude 3 - Flux et induction
 
-![Figure 7. Five-phase diagnostic: air-gap radial flux density and spatial harmonic content. Mechanical order n=1 means two poles; the intended working order n=4 means eight poles.](assets/five-phase-45s-8p-span11-diagnostics.png)
+![Figure 9 - Configuration pentaphasée à pas de cinq encoches : lignes de flux et induction à φ=90°. La composante de travail à huit pôles est dominante.](assets/five-phase-45s-8p-span5-field.png)
 
-## Distinguish a balanced supply from a clean spatial field
+## Résultats numériques
 
-Balance checks concern equal phase conductor counts, equal working-phasor magnitudes and the correct phase offsets. They do not prove that the resultant winding function is sinusoidal. The requested layout satisfies balance while producing a strong lower spatial order. Calling it a phase-unbalanced winding would identify the wrong cause.
+Le maillage comprend **10 800 cellules**, avec 270 divisions angulaires et 40 radiales. Les résidus relatifs complets sont inférieurs à 1,1e-14. La superposition est comparée à une résolution indépendante à 37° avec un écart inférieur à **1,3e-12 T**.
 
-A travelling component of order n can be written as A cos(nθ±φ+γ). Its phase moves at a mechanical angular rate with magnitude electrical angular rate divided by n. The two-basis Fourier decomposition separates these directions: in this plot's positive-θ convention, the n=1 component travels toward positive θ and the working n=4 component toward negative θ. The former has four times the mechanical angular-speed magnitude of the latter. Their interference, together with other spatial components and slot modulation, explains the changing field shape.
+Dans l'entrefer, la composante radiale de travail n=4 atteint **0,944865 T**, contre **0,117748 T** pour n=1. La composante à deux pôles représente ainsi environ **12,46 %** de l'amplitude de travail. La norme maximale sur la section et le cycle vaut **2,09136 T**.
 
-## Comment on useful coupling and possible efficiency consequences
+## Lecture physique
 
-This particular span-11 arrangement makes poor use of its configured ampere-turns for intended eight-pole operation: k_w is only 0.0686 and the two-pole field dominates. Parasitic spatial components can contribute to torque pulsations and additional rotor/iron losses in a real machine [4]. Their effect depends on the rotor, its speed, conductivity, materials and operating point.
+Le pas de cinq encoches produit un couplage élevé avec les huit pôles recherchés. Les lignes de flux et le spectre montrent cette composante dominante. Les conducteurs discrets et les ouvertures d'encoche conservent néanmoins d'autres composantes spatiales.
 
-**The report therefore diagnoses poor working-harmonic coupling and distorted rotation, not a calculated efficiency loss.** It does not imply that five-phase machines are inherently less efficient. A torque, resistance, induced-current and loss model - or suitable measurements - is required to establish efficiency for a physical machine.
+Le nombre de phases est vérifié dans la matrice et les courants, indépendamment de la forme instantanée du champ. La page suivante détaille cette vérification pentaphasée.
+
+[Vidéo des cinq courants et du champ pentaphasé](https://khalilellahlagha.github.io/projects/winding-flux-analysis.html#flux-videos)
 
 <!-- pagebreak -->
 
-# Comparison and numerical evidence
+# Vérification des cinq phases
 
-| Quantity | Three-phase default | Two-phase | Five-phase requested |
+## Excitation effectivement utilisée
+
+Les cinq courants configurés, d'amplitude 2,8 A, sont :
+
+```math
+i_k(\varphi)=2.8\sin\left(\varphi+\frac{2\pi k}{5}\right),\qquad k=0,1,2,3,4.
+```
+
+![Figure 10 - Courants d'alimentation A à E du cas pentaphasé : cinq sinusoïdes de même amplitude, espacées de 72° électriques.](assets/five-phase-45s-8p-span5-currents.png)
+
+À φ=90°, les valeurs de A à E sont respectivement **2,8000 ; 0,8652 ; -2,2652 ; -2,2652 ; 0,8652 A**. La convention double couche divise ces valeurs par deux dans chaque couche. Les cinq phases sont présentes même lorsque deux valeurs instantanées coïncident par symétrie.
+
+## Contrôles de cohérence
+
+```text
+1. Lire m=5 et vérifier les 10 lignes physiques de C.
+2. Vérifier les déphasages et les conducteurs de chaque phase.
+3. Calculer séparément les cinq contributions de FMM.
+4. Vérifier que leur somme donne la FMM résultante.
+5. Résoudre séparément les excitations de phase au même angle.
+6. Vérifier que la somme des champs signés donne le champ total.
+```
+
+Les cinq phases définissent l'alimentation. Les deux solutions temporelles sont une décomposition du calcul linéaire. La vidéo présente simultanément les cinq courants, leurs valeurs et l'angle électrique avec le champ à huit pôles dominant.
+
+À 37°, la somme des cinq champs résolus séparément reproduit le champ total avec un écart maximal inférieur à **1,1e-12 T**. Les cinq contributions de champ sont non nulles à cet angle.
+
+<!-- pagebreak -->
+
+# Partie III - Analyse harmonique
+
+![Figure 11 - Diagnostic du cas pentaphasé au pas de cinq : FMM, induction radiale et spectres spatiaux. Un ordre mécanique n correspond à 2n pôles.](assets/five-phase-45s-8p-span5-diagnostics.png)
+
+## Composante utile et composantes résiduelles
+
+La FMM de travail n=4 atteint **987,69 A·tour**, tandis que n=1 atteint **128,22 A·tour**, soit environ **13,0 %** de l'amplitude utile. Le spectre confirme la dominance de l'ordre à huit pôles et le facteur de bobinage élevé de cette configuration.
+
+Une onde spatiale s'écrit A cos(nθ±φ+γ). La vitesse mécanique de phase a pour module la vitesse électrique divisée par n. La décomposition des champs distingue les deux sens : dans le repère des figures, n=1 se propage vers les θ croissants et n=4 vers les θ décroissants. Le premier possède un module de vitesse de phase quatre fois plus élevé.
+
+La superposition de la composante utile dominante et des composantes résiduelles peut légèrement modifier la forme du champ pendant le cycle. Les encoches ajoutent des modulations locales. Ces effets ne constituent pas un déséquilibre des cinq courants.
+
+## Conséquences pour la conception
+
+Le pas de cinq exploite efficacement les ampères-tours pour l'ordre de travail à huit pôles, au sens du facteur de bobinage. Les composantes parasites peuvent toutefois contribuer aux ondulations de couple et à des pertes supplémentaires dans le rotor ou le fer [4]. Leur effet réel dépend du rotor, de la vitesse et des matériaux.
+
+Le modèle ne calcule pas ces pertes ni la puissance mécanique. Il fournit un diagnostic du champ, sans valeur numérique de rendement et sans conclusion générale défavorable aux machines à cinq phases.
+
+<!-- pagebreak -->
+
+# Synthèse et limites de l'étude
+
+| Grandeur | Triphasé | Diphasé | Pentaphasé |
 | --- | --- | --- | --- |
-| m / Q / P / y | 3 / 36 / 4 / 9 | 2 / 24 / 4 / 6 | 5 / 45 / 8 / 11 |
-| Electrical coil span | 180° | 180° | 352° |
-| Working k_w | 0.959795 | 0.910684 | 0.068629 |
-| Intended spatial order | n=2 | n=2 | n=4 |
-| Working MMF peak, A-turn | 1568.58 | 990.64 | 69.96 |
-| Working gap Br peak, T | 1.43877 | 0.85541 | 0.06693 |
-| Mesh cells | 8,640 | 5,760 | 10,800 |
+| m / Q / P / y | 3 / 36 / 4 / 9 | 2 / 24 / 4 / 6 | 5 / 45 / 8 / 5 |
+| Ouverture électrique de bobine | 180° | 180° | 160° |
+| Facteur de travail k_w | 0,959795 | 0,910684 | 0,968885 |
+| Ordre de travail | n=2 | n=2 | n=4 |
+| FMM de travail de crête, A·tour | 1568,58 | 990,64 | 987,69 |
+| Induction radiale de travail de crête, T | 1,43877 | 0,85541 | 0,94486 |
+| Cellules | 8 640 | 5 760 | 10 800 |
 
-These amplitudes are obtained under common app N/current settings, not common useful power. Their comparison isolates the implemented layouts and shows why a nominal pole count alone cannot characterise the generated field. The five-phase distribution factor is high, but its nearly full-electrical-period throw sharply suppresses the intended working component.
+## Bilan
 
-## What the videos demonstrate
+J'ai relié les connexions physiques à une chaîne complète : courants de phase, FMM, sources distribuées, réluctances, flux et induction. Les contrôles géométriques, électriques et algébriques vérifient la cohérence des étapes.
 
-The default video and the exact five-phase video use actual signed field and A_z basis solutions. Their density limits remain fixed within each recording. The excitation makes one full electrical sweep; playback is slowed for inspection and the stationary rotor geometry is retained. They demonstrate field shape and spatial wave interaction, rather than shaft motion or an electromagnetic transient with eddy currents.
+Les trois études présentent un couplage élevé à leur ordre de travail. Le cas pentaphasé au pas de cinq conserve une composante utile à huit pôles dominante et des composantes parasites résiduelles. Les dessins statoriques permettent de relier directement ces résultats aux phases et aux côtés de bobine de chaque configuration.
 
-The two-basis model is also checked numerically. At an independently solved angle, the maximum cell-centre discrepancy is about 1e-12 T or less. The full-network residuals are far below the acceptance threshold. These are consistency checks; the newly studied cases have not received a separate mesh-convergence or FEMM accuracy certification.
+## Limites et prolongements
 
-The cell-centre magnetic-energy diagnostic is essentially constant over each cycle, with relative peak-to-peak differences around 1e-15. Consequently, the changing five-phase picture should not be described as calculated energy instability or an efficiency ripple. Shape deformation and energy dissipation are different quantities.
+Les calculs sont bidimensionnels, à géométrie fixe et perméabilités imposées. Ils n'incluent ni saturation, ni courants induits dans le rotor, ni résistance des conducteurs, ni pertes fer, ni dynamique mécanique. Le résidu vérifie le réseau ; la précision physique demande une étude de convergence et une validation adaptée.
 
-## Engineering follow-up
+Les cas ne sont pas dimensionnés à puissance ou masse de cuivre égales. Leurs amplitudes ne classent donc pas leurs rendements. Le diagnostic d'énergie à partir des valeurs centrales de B reste pratiquement constant sur le cycle : la déformation du champ pentaphasé ne constitue pas une perte d'énergie mesurée.
 
-For a practical eight-pole design, coil throw should be revisited while preserving phase symmetry, physical occupancy and manufacturability. The relevant comparison would include working harmonic, parasitic orders, copper length/resistance, rotor loss, saturation and torque. The requested span-11 case is preserved in the report and video as a diagnostic study; no favourable replacement has been substituted.
+Pour prolonger ce travail, je comparerais les pas en conservant remplissage et équilibrage, puis j'introduirais saturation, couple et pertes. Il deviendrait possible d'évaluer les compromis entre ordre de travail, composantes parasites, longueur de cuivre et performances réelles.
 
 <!-- pagebreak -->
 
-# Reproduction, authorship and credits
+# Reproductibilité et références
 
-## Reproduce the figures and videos
+## Organisation des résultats
 
-From a source checkout, install the main and optional publication dependencies, generate the numerical assets, then render this report:
+Le [dépôt de l'application](https://github.com/KhalilEllahLAGHA/Winding-and-flux-analysis-program) contient les algorithmes, les paramètres et les exports numériques. Matrices, profils de FMM, échantillons d'induction et indicateurs de résolution sont conservés avec les figures. La [présentation du projet](https://khalilellahlagha.github.io/projects/winding-flux-analysis.html#flux-videos) donne accès aux deux vidéos.
+
+Les études et le rapport peuvent être reproduits avec les scripts fournis :
 
 ```text
 python -m pip install -r requirements.txt -r requirements-report.txt
@@ -479,20 +685,14 @@ python tools/generate_report_assets.py
 python tools/build_algorithm_report.py
 ```
 
-The authored source is `docs/multiphase-report/report.md`. The same folder contains its rendered PDF, scientific PNGs and MP4s under `assets/`, plus machine-readable JSON/CSV evidence under `data/`. The matrix CSVs, MMF samples, air-gap samples, mesh settings, winding factors, residuals and independent animation checks identify how each figure was obtained. The source generator sets the case parameters explicitly, including the requested five-phase span 11.
+J'ai développé l'application et intégré la génération des connexions au calcul de FMM et à la visualisation du champ. Les sources de la méthode et du générateur sont créditées ci-dessous.
 
-The application uses PyQt6 with a neutral dark interface, multiphase controls, cached numerical solutions and continuous field animation. Its implementation is available in the [GitHub project](https://github.com/KhalilEllahLAGHA/Winding-and-flux-analysis-program). This report and both flux recordings are also linked from the [portfolio project](https://khalilellahlagha.github.io/projects/winding-flux-analysis.html).
+## Références et crédits
 
-## Attribution
+**[1] Dolomites / Koil.** Projet Python de Luigi Alberti et des contributeurs, Université de Padoue. Le module Koil fournit l'étoile des encoches et la population des bobines intégrées à cette application. Révision utilisée : `21eceabcdf09ecd0873b693cfa123b3567d6f62b`. Le code amont, sa notice et sa licence GNU GPLv3 sont conservés dans le dépôt. Mon adaptateur corrige les appartenances périodiques aux frontières des secteurs et ajoute les contrôles physiques présentés. [Dépôt du projet](https://gitlab.com/LuigiAlberti/dolomites-python). [Notice de la révision](https://gitlab.com/LuigiAlberti/dolomites-python/-/raw/21eceabcdf09ecd0873b693cfa123b3567d6f62b/README.md).
 
-**LAGHA Khalil Ellah** is credited for this application, the integration, report and numerical visualisation. **Luigi Alberti and the Dolomites contributors** are credited for the upstream Koil winding generator and its published method. The generator source is copied unmodified at pinned revision `21eceabcdf09ecd0873b693cfa123b3567d6f62b`; adapter changes and checks are identified in `core/connection_matrix.py` and the third-party notice. Dolomites copyright is 2006-2026 L. Alberti and contributors, University of Padova. Its GPLv3 licence and notice are retained under `third_party/dolomites/` and bundled with the executable. AI assistance supported implementation, analysis and report preparation; the numerical evidence and stated model assumptions remain explicit.
+**[2] L. Alberti**, « Koil: A Tool to Design the Winding of Rotating Electric Machinery », 2018 XIII International Conference on Electrical Machines (ICEM), Alexandroupoli, Grèce, p. 805-811. [DOI : 10.1109/ICELMACH.2018.8507004](https://doi.org/10.1109/ICELMACH.2018.8507004). Référence méthodologique du générateur intégré ; les étapes décrites ici ont été vérifiées sur le code cité en [1].
 
-## References
+**[3] D. Meeker**, « Finite Element Method Magnetics - User's Manual », version 4.2, section 2.3.6 : potentiel vecteur et lignes de flux. [Manuel officiel](https://www.femm.info/Archives/doc/manual.pdf).
 
-[1] Dolomites / Koil, upstream Python project and pinned source. [Project repository](https://gitlab.com/LuigiAlberti/dolomites-python). [Pinned README and contributor/licence information](https://gitlab.com/LuigiAlberti/dolomites-python/-/raw/21eceabcdf09ecd0873b693cfa123b3567d6f62b/README.md).
-
-[2] L. Alberti, **Koil: A Tool to Design the Winding of Rotating Electric Machinery**, 2018 XIII International Conference on Electrical Machines (ICEM), Alexandroupoli, Greece, pp. 805-811. [DOI: 10.1109/ICELMACH.2018.8507004](https://doi.org/10.1109/ICELMACH.2018.8507004). [University of Padova publication record](https://www.research.unipd.it/handle/11577/3296310). The implementation account here is verified against the pinned source; the article is credited as its methodological reference.
-
-[3] D. Meeker, **Finite Element Method Magnetics - User's Manual**, section 2.3.6, flux contours and magnetic vector potential. [Official FEMM manual](https://www.femm.info/Archives/doc/manual.pdf).
-
-[4] B. Brkovic and M. Jecmenica, **Calculation of Rotor Harmonic Losses in Multiphase Induction Machines**, Machines 2022, 10(5), 401. [DOI: 10.3390/machines10050401](https://doi.org/10.3390/machines10050401). This source supports the qualitative harmonic-loss mechanism; its machine-specific loss values are not transferred to the present model.
+**[4] B. Brkovic et M. Jecmenica**, « Calculation of Rotor Harmonic Losses in Multiphase Induction Machines », Machines, 2022, vol. 10, n° 5, article 401. [DOI : 10.3390/machines10050401](https://doi.org/10.3390/machines10050401). Cette source étaye le lien qualitatif entre composantes spatiales et pertes. Ses résultats chiffrés ne sont pas transposés aux configurations du présent rapport.

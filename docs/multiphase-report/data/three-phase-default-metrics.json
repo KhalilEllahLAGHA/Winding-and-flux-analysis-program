@@ -1,6 +1,6 @@
 {
   "slug": "three-phase-default",
-  "title": "Default three-phase winding",
+  "title": "Bobinage triphasé de référence",
   "phases": 3,
   "slots": 36,
   "poles": 4,
@@ -10,12 +10,19 @@
     "fps": 30,
     "seconds": 12.0,
     "frames": 360,
-    "width": 1280,
-    "height": 720,
+    "width": 1600,
+    "height": 900,
     "codec": "H.264",
     "pixel_format": "yuv420p",
     "color_max_t": 2.945843072318254,
-    "size_bytes": 4598966
+    "size_bytes": 5732525,
+    "language": "fr",
+    "visible_current_channels": [
+      "A",
+      "B",
+      "C"
+    ],
+    "current_traces_and_live_values": true
   },
   "author": "LAGHA Khalil Ellah",
   "layers": "double",
@@ -118,6 +125,59 @@
     2.8979297539173295e-13
   ],
   "animation_direct_check_37deg_max_abs_t": 1.5910259221207923e-12,
+  "phase_excitation_audit": {
+    "phase_count": 3,
+    "matrix_shape": [
+      6,
+      36
+    ],
+    "phase_offsets_deg": [
+      0.0,
+      120.0,
+      240.0
+    ],
+    "configured_currents_at_90deg_a": [
+      2.8,
+      -1.4000000000000001,
+      -1.4000000000000012
+    ],
+    "mmf_phase_sum_angles_deg": [
+      0,
+      37,
+      90,
+      147
+    ],
+    "mmf_phase_sum_max_abs_errors_a_turn": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "independent_field_angle_deg": 37,
+    "total_field_relative_residual": 7.012165653818544e-15,
+    "individual_phase_solves": [
+      {
+        "phase": "A",
+        "offset_deg": 0.0,
+        "field_max_abs_component_t": 1.2727668559970575,
+        "relative_residual": 6.100454812160415e-15
+      },
+      {
+        "phase": "B",
+        "offset_deg": 120.0,
+        "field_max_abs_component_t": 0.8263496436875405,
+        "relative_residual": 7.143063552562589e-15
+      },
+      {
+        "phase": "C",
+        "offset_deg": 240.0,
+        "field_max_abs_component_t": 2.09911649968538,
+        "relative_residual": 7.763019081617285e-15
+      }
+    ],
+    "field_phase_sum_max_abs_error_t": 1.5059065106015623e-12,
+    "note": "All phase excitations are included; two temporal bases are not two electrical phases."
+  },
   "airgap_sample_radius_mm": 40.7,
   "airgap_sample_count": 216,
   "mmf_working_harmonic_peak_a_turn": 1568.5848281027627,
@@ -385,6 +445,6 @@
     "Each static density figure uses its own full-cycle fixed colour scale.",
     "Flux contours use the application per-frame equal-Az levels; the density colour scale stays fixed for the whole cycle."
   ],
-  "generation_seconds_before_video": 3.8253285999962827,
-  "total_generation_seconds": 98.84706849999202
+  "generation_seconds_before_video": 3.9182416000112426,
+  "total_generation_seconds": 114.3447575000173
 }

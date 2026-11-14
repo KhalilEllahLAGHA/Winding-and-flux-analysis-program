@@ -25,7 +25,7 @@ from reportlab.platypus import (BaseDocTemplate, Frame, Image, KeepTogether,
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / 'docs/multiphase-report/report.md'
-OUTPUT = SOURCE.parent / 'winding-dolomites-multiphase-report.pdf'
+OUTPUT = SOURCE.parent / 'rapport-bobinages-multiphases.pdf'
 PAGE_W, PAGE_H = A4
 MARGIN = 51
 WIDTH = PAGE_W - 2*MARGIN
@@ -69,11 +69,11 @@ def page_decoration(canvas, doc):
     canvas.rect(0, PAGE_H-11, PAGE_W, 11, fill=1, stroke=0)
     canvas.setFont('Report', 8)
     canvas.setFillColor(colors.HexColor('#586573'))
-    canvas.drawString(MARGIN, PAGE_H-33, 'WINDING & FLUX ANALYSIS / DOLOMITES - KOIL')
+    canvas.drawString(MARGIN, PAGE_H-33, 'BOBINAGES MULTIPHASÉS / ANALYSE DU CHAMP MAGNÉTIQUE')
     canvas.setStrokeColor(colors.HexColor('#d5dde3'))
     canvas.line(MARGIN, 43, PAGE_W-MARGIN, 43)
     canvas.setFont('Report', 8)
-    canvas.drawString(MARGIN, 29, 'LAGHA Khalil Ellah  |  13 November 2026')
+    canvas.drawString(MARGIN, 29, 'LAGHA Khalil Ellah  |  14 novembre 2026')
     canvas.drawRightString(PAGE_W-MARGIN, 29, str(doc.page))
     canvas.restoreState()
 
@@ -102,8 +102,8 @@ def make_styles():
                               firstLineIndent=-9, spaceAfter=4))
     styles.add(ParagraphStyle('CaptionReport', parent=styles['BodyText'], fontSize=8.2,
                               leading=11.5, textColor=colors.HexColor('#53616d'), spaceAfter=9))
-    styles.add(ParagraphStyle('CoverTitle', parent=styles['Heading1'], fontSize=34,
-                              leading=41, spaceBefore=34, spaceAfter=24))
+    styles.add(ParagraphStyle('CoverTitle', parent=styles['Heading1'], fontSize=29,
+                              leading=36, spaceBefore=27, spaceAfter=20))
     styles.add(ParagraphStyle('CoverLead', parent=styles['BodyText'], fontSize=15,
                               leading=23, spaceAfter=18))
     styles.add(ParagraphStyle('CodeReport', fontName='Code', fontSize=7.35,
@@ -217,13 +217,15 @@ def build():
             i += 1
         story.append(Paragraph(inline(' '.join(paragraph)), styles['BodyText']))
     OUTPUT.parent.mkdir(parents=True, exist_ok=True)
-    doc = ReportDocument(str(OUTPUT), pagesize=A4, title='Dolomites / Koil - Winding Generation and Multiphase Field Studies',
-                         author='LAGHA Khalil Ellah', subject='Algorithm, MMF, flux density and spatial harmonic analysis',
+    doc = ReportDocument(str(OUTPUT), pagesize=A4, title='Génération des bobinages multiphasés et analyse du champ magnétique',
+                         author='LAGHA Khalil Ellah', subject='Algorithmes, force magnétomotrice, induction et harmoniques spatiaux',
                          leftMargin=MARGIN, rightMargin=MARGIN, topMargin=54, bottomMargin=59)
     doc.addPageTemplates(PageTemplate(id='report', frames=[Frame(MARGIN,59,WIDTH,PAGE_H-113,
                                                                 leftPadding=0,rightPadding=0,topPadding=0,bottomPadding=0)],
                                      onPage=page_decoration))
     doc.build(story)
+    # Retain previously shared PDF URLs with the same revised French document.
+    (SOURCE.parent / 'winding-dolomites-multiphase-report.pdf').write_bytes(OUTPUT.read_bytes())
     print(OUTPUT)
 
 

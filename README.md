@@ -84,29 +84,36 @@ of the number of poles; pole count controls the spatial winding, not that period
 
 ## Detailed algorithm report and numerical studies
 
-The [18-page report](docs/multiphase-report/winding-dolomites-multiphase-report.pdf)
-by **LAGHA Khalil Ellah** explains the algorithm symbolically before three worked
-double-layer studies. It includes phase/resultant MMF, flux contours and density
-figures for each case, with Dolomites/Koil attribution and equations through the
-field solver. The editable source is [report.md](docs/multiphase-report/report.md).
+The [French technical report](docs/multiphase-report/rapport-bobinages-multiphases.pdf),
+**Génération algorithmique et analyse du champ magnétique**, by **LAGHA Khalil Ellah**,
+contains 24 pages written for academic review. Eight algorithms specify inputs,
+outputs, logical steps and checks before three worked double-layer studies.
+Each study includes the application's native stator-winding drawing,
+phase/resultant MMF, flux contours and induction figures.
+Upstream credits are grouped in the references. The editable source is
+[report.md](docs/multiphase-report/report.md).
 
 | Case | Phases | Slots | Total poles | Coil span | Working winding factor |
 |---|---:|---:|---:|---:|---:|
 | Default | 3 | 36 | 4 | 9 | 0.959795 |
 | Two-phase | 2 | 24 | 4 | 6 | 0.910684 |
-| Requested long throw | 5 | 45 | 8 | 11 | 0.068629 |
+| Five-phase | 5 | 45 | 8 | 5 | 0.968885 |
 
-The exact five-phase case is balanced, but its 352-degree electrical coil span
-nearly cancels the intended eight-pole MMF. A strong counter-rotating two-pole
-subharmonic deforms the composite field. The report discusses possible torque
-and loss consequences; this fixed-permeability model does not compute efficiency.
+The corrected five-phase case uses a span of **5 slots**, or 160 electrical
+degrees. Its working winding factor is 0.968885 and the intended eight-pole
+component is dominant. Residual spatial components remain and are quantified in
+the report; this fixed-permeability model does not compute efficiency.
 Different phase/slot counts at the same current setting are not an equal-power
 or equal-copper comparison.
 
-Two 12-second, 30-fps flux videos show the default and requested five-phase cases
+Two French 12-second, 30-fps, 1600×900 flux videos show the default and five-phase cases
 on the [portfolio](https://khalilellahlagha.github.io/projects/winding-flux-analysis.html#flux-videos).
-They combine signed solved field bases and keep a fixed density scale within each
-video. Matrices, MMF/air-gap CSVs, harmonic metrics and verification data are in
+They display every sinusoidal phase current and its live value alongside the
+solved field. Five electrical phases are distinguished from the spatial pole
+count. An independent sum of five phase solves agrees with the complete field
+within 1.1e-12 T at 37 electrical degrees. The two
+temporal field bases preserve all phases. Density scales are fixed per video.
+Matrices, MMF/air-gap/current CSVs, harmonic metrics and verification data are in
 [the numerical evidence folder](docs/multiphase-report/data/).
 
 Reproduce the assets and report from the repository root:

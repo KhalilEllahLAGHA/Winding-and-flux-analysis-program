@@ -1,6 +1,6 @@
 {
   "slug": "two-phase",
-  "title": "Two-phase winding",
+  "title": "Bobinage diphasé",
   "phases": 2,
   "slots": 24,
   "poles": 4,
@@ -69,6 +69,10 @@
     4,
     24
   ],
+  "top_conductors_per_phase": [
+    12,
+    12
+  ],
   "conductors_per_phase": [
     24,
     24
@@ -100,6 +104,51 @@
     1.8049710719693284e-13
   ],
   "animation_direct_check_37deg_max_abs_t": 1.0238476733093194e-12,
+  "phase_excitation_audit": {
+    "phase_count": 2,
+    "matrix_shape": [
+      4,
+      24
+    ],
+    "phase_offsets_deg": [
+      0.0,
+      90.0
+    ],
+    "configured_currents_at_90deg_a": [
+      2.8,
+      3.429011037612589e-16
+    ],
+    "mmf_phase_sum_angles_deg": [
+      0,
+      37,
+      90,
+      147
+    ],
+    "mmf_phase_sum_max_abs_errors_a_turn": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "independent_field_angle_deg": 37,
+    "total_field_relative_residual": 5.901461006430077e-15,
+    "individual_phase_solves": [
+      {
+        "phase": "A",
+        "offset_deg": 0.0,
+        "field_max_abs_component_t": 1.02027671376099,
+        "relative_residual": 4.705462073422254e-15
+      },
+      {
+        "phase": "B",
+        "offset_deg": 90.0,
+        "field_max_abs_component_t": 1.353952929616335,
+        "relative_residual": 6.965736997692273e-15
+      }
+    ],
+    "field_phase_sum_max_abs_error_t": 7.704947790898586e-13,
+    "note": "All phase excitations are included; two temporal bases are not two electrical phases."
+  },
   "airgap_sample_radius_mm": 40.7,
   "airgap_sample_count": 144,
   "mmf_working_harmonic_peak_a_turn": 990.6406694650253,
@@ -367,10 +416,6 @@
     "Each static density figure uses its own full-cycle fixed colour scale.",
     "Flux contours use the application per-frame equal-Az levels; the density colour scale stays fixed for the whole cycle."
   ],
-  "generation_seconds_before_video": 3.180114599992521,
-  "total_generation_seconds": 3.180128899999545,
-  "top_conductors_per_phase": [
-    12,
-    12
-  ]
+  "generation_seconds_before_video": 3.6452087000070605,
+  "total_generation_seconds": 3.6452184000227135
 }

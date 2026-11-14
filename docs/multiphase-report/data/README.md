@@ -1,4 +1,17 @@
-# Numerical export method
+# Méthode d'exportation des études numériques
+
+Les cas actifs sont : 3 phases, 36 encoches, 4 pôles, pas 9 ; 2 phases,
+24 encoches, 4 pôles, pas 6 ; et 5 phases, 45 encoches, 8 pôles, pas 5.
+Le cas actif à cinq phases utilise bien le pas de 5 encoches. Les fichiers
+éventuellement conservés avec le suffixe `span11` sont historiques ; le résumé
+`study-summary.json` et le manifeste indiquent exclusivement les cas actifs.
+
+Les vidéos françaises affichent les courants A–C ou A–E, leurs traces et leurs
+valeurs instantanées. Pour chaque cas, un audit additionne les champs obtenus
+par résolutions indépendantes de chaque phase et vérifie leur égalité au champ
+complet à φ=37°. Pour cinq phases, les cinq contributions sont non nulles.
+Deux champs de base temporels sont une représentation de tous les courants
+sinusoïdaux de même fréquence et ne constituent pas deux phases d'alimentation.
 
 Reproduce the studies from the project root:
 
@@ -9,7 +22,7 @@ Reproduce the studies from the project root:
 
 The figures, numerical data and videos are generated from the actual Dolomites
 matrix, MMF engine and reluctance-network solver. Every study uses double layer,
-204 turns, 2.8 A peak phase-current input (1.4 A per layer under the application's
+an N=204 coil-side turn multiplier, 2.8 A peak phase-current input (1.4 A per layer under the application's
 convention), a 110 mm axial length, the default machine radii/slot depth and
 relative permeabilities. The slot opening is half the slot pitch. Static figures
 are at Wt = 90 electrical degrees; all use the medium mesh preset.
@@ -41,9 +54,10 @@ Air-gap sampling and slot harmonics remain mesh dependent.
 Travelling-wave decomposition uses C = 2 FFT(B at Wt0)/N and
 S = 2 FFT(B at Wt90)/N. The +theta component is (C+iS)/2 and the -theta component
 is (C-iS)/2. Theta increases counterclockwise in the plotted cross-section.
-The five-phase span-11 case has a dominant n=1 component rotating opposite to
-the intended n=4 component. It is nevertheless balanced in its five intended
-working-harmonic phase axes and sinusoidal current amplitudes.
+The active five-phase span-5 case has a dominant working order n=4 (eight poles),
+with a smaller counter-rotating n=1 component. It is balanced in its five
+working-harmonic phase axes and sinusoidal current amplitudes. The previous
+span-11 study is not the case shown in the current report or current video.
 
 Metrics retain full solver residuals, contour fit residuals, input values and
 animation-versus-direct errors. Cell-centre B-squared energy is only a numerical

@@ -1,0 +1,59 @@
+[
+  {
+    "case": "three-phase-default",
+    "phases": 3,
+    "slots": 36,
+    "poles": 4,
+    "span": 9,
+    "layers": "double",
+    "matrix_shape": [
+      6,
+      36
+    ],
+    "source_widget": "ui.stator_drawing.StatorDrawing",
+    "annotations_language": "fr",
+    "native_matrix_verified": true,
+    "image": "three-phase-default-winding.png",
+    "width": 1600,
+    "height": 1600,
+    "sha256": "20f8084c21433b559b0fc4fc61474ff1104e45f56867e52ccfcfd06e1c91dcfd"
+  },
+  {
+    "case": "two-phase",
+    "phases": 2,
+    "slots": 24,
+    "poles": 4,
+    "span": 6,
+    "layers": "double",
+    "matrix_shape": [
+      4,
+      24
+    ],
+    "source_widget": "ui.stator_drawing.StatorDrawing",
+    "annotations_language": "fr",
+    "native_matrix_verified": true,
+    "image": "two-phase-winding.png",
+    "width": 1600,
+    "height": 1600,
+    "sha256": "968737dbf4d085302ce67cf80f0e67fb4507e53f2be37f40583f29e18d3c2e70"
+  },
+  {
+    "case": "five-phase-45s-8p-span5",
+    "phases": 5,
+    "slots": 45,
+    "poles": 8,
+    "span": 5,
+    "layers": "double",
+    "matrix_shape": [
+      10,
+      45
+    ],
+    "source_widget": "ui.stator_drawing.StatorDrawing",
+    "annotations_language": "fr",
+    "native_matrix_verified": true,
+    "image": "five-phase-45s-8p-span5-winding.png",
+    "width": 1600,
+    "height": 1600,
+    "sha256": "eb33694177db6fff505271e4c8ba80bf29f0cb4ddce5fd89da4e5bfadb3b4a5f"
+  }
+]
