@@ -45,7 +45,7 @@ STAGES = (
     ("MMF curves", "Inspect the phase contributions and the resultant MMF."),
     ("Machine geometry", "Set the dimensions and inspect the machine cross-section."),
     ("Mesh", "Choose a resolution and generate the polar mesh."),
-    ("Field analysis", "Solve the magnetic field, inspect results and compare with FEMM."),
+    ("Field animation", "Play the prepared field, inspect results and compare with FEMM."),
 )
 
 
@@ -124,7 +124,7 @@ class MainWindow(QMainWindow):
         self.navigation_group = QButtonGroup(self)
         self.navigation_group.setExclusive(True)
         self.navigation_buttons = []
-        for index, short_title in enumerate(('Winding', 'MMF curves', 'Geometry', 'Mesh', 'Field analysis')):
+        for index, short_title in enumerate(('Winding', 'MMF curves', 'Geometry', 'Mesh', 'Animation')):
             button = QPushButton(f'{index + 1}  {short_title}')
             button.setObjectName('workflowNavButton')
             button.setCheckable(True)
@@ -150,7 +150,12 @@ class MainWindow(QMainWindow):
         return tab_index if tab_index < 2 else 2 + self.current_flux_step
 
     def closeEvent(self, event):
-        worker = getattr(getattr(self, 'flux_density_page_ui', None), '_animation_worker', None)
+        controller = getattr(self, 'flux_density_page_ui', None)
+        if controller is not None:
+            controller._closing = True
+            controller._auto_prepare_timer.stop()
+            controller.pause_animation(sync_results=False)
+        worker = getattr(controller, '_animation_worker', None)
         if worker is not None and worker.isRunning():
             worker.requestInterruption()
             worker.finished.connect(self.close)
@@ -178,6 +183,8 @@ class MainWindow(QMainWindow):
             go_to_flux_step(self, stage - 2)
             self.tabs.setCurrentIndex(2)
         self.sync_navigation()
+        if stage == 4:
+            self.flux_density_page_ui.play_animation()
         self.tabs.currentWidget().setFocus(Qt.FocusReason.OtherFocusReason)
 
     def sync_navigation(self, *_):

@@ -27,6 +27,7 @@ femm_validation/runs/
 /requirements-report.txt
 /requirements-build.txt
 /WindingFlux.spec
+/ui/flux_visualization.py
 /femm_validation/*.fem
 /femm_validation/*.ans
 /femm_validation/physics-audit.md

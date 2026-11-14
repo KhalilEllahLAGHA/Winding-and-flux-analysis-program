@@ -67,9 +67,37 @@ class FieldAnimationView(pg.GraphicsLayoutWidget):
         self.colorbar.axis.setPen('#777777')
         self.colorbar.axis.setLabel('|B| (T)', color='#555555')
         self.model = None
+        self.arrows_visible = True
+        self.angle = 0.0
+        self.probe = pg.ScatterPlotItem(size=7, pen=pg.mkPen('white'), brush=pg.mkBrush('#4f8cff'))
+        self.plot.addItem(self.probe)
+        self.message = pg.TextItem('Generate a mesh to prepare the field.', color='#555555',
+                                   anchor=(0.5, 0.5))
+        self.plot.addItem(self.message)
+        self.clear_model('Generate a mesh to prepare the field.')
+
+    def clear_model(self, text):
+        self.model = None
+        self.image.clear()
+        for item in (self.contours, self.geometry, self.arrow_halo, self.arrows, self.probe):
+            item.clear()
+        self.colorbar.hide()
+        self.message.setText(text)
+        self.message.show()
+        self.plot.setTitle('Magnetic field', color='#222222', size='11pt')
+        self.plot.setRange(xRange=(-1, 1), yRange=(-1, 1), padding=0)
+
+    def set_arrows_visible(self, visible):
+        self.arrows_visible = bool(visible)
+        show = self.model is not None and self.mode != 'B Heatmap' and self.arrows_visible
+        self.arrow_halo.setVisible(show)
+        self.arrows.setVisible(show)
+        if self.model is not None:
+            self.show_angle(self.angle)
 
     def set_model(self, model, mode, contour_count=12):
         self.model, self.mode = model, mode
+        self.message.hide()
         self.contour_count = contour_count
         radius = model.outer_radius
         # ImageItem requires assigned image dimensions before setRect.
@@ -87,15 +115,19 @@ class FieldAnimationView(pg.GraphicsLayoutWidget):
             self.image.setLookupTable(None)
             self.image.setImage(model.material_image, autoLevels=False, levels=(0, 255))
         self.contours.setVisible(mode != 'B Heatmap')
-        self.arrow_halo.setVisible(mode != 'B Heatmap')
-        self.arrows.setVisible(mode != 'B Heatmap')
+        self.arrow_halo.setVisible(mode != 'B Heatmap' and self.arrows_visible)
+        self.arrows.setVisible(mode != 'B Heatmap' and self.arrows_visible)
 
     def show_angle(self, angle):
+        if self.model is None:
+            return
+        self.angle = float(angle)
         if self.mode != 'Flux Lines':
             self.image.setImage(self.model.image_at(angle), autoLevels=False,
                                  levels=(0, self.model.color_max))
         if self.mode != 'B Heatmap':
-            paths, arrows = self.model.contour_frame_at(angle, self.contour_count)
+            paths, arrows = self.model.contour_frame_at(
+                angle, self.contour_count, show_arrows=self.arrows_visible)
             self.contours.setData(paths[:, 0], paths[:, 1])
             self.arrow_halo.setData(arrows[:, 0], arrows[:, 1])
             self.arrows.setData(arrows[:, 0], arrows[:, 1])
