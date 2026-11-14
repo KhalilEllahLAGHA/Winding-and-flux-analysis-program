@@ -85,7 +85,7 @@ class FluxCalculator:
     def calculate_flux_distribution(self, reluctance_results, mmf_results,
                                     solver_options=None, progress_callback=None,
                                     include_flux_densities=True,
-                                    include_statistics=True):
+                                    include_statistics=True, prepared_potentials=None):
         """Run the full solve and return potentials, fluxes, and densities."""
         start_time = time.time()
 
@@ -113,7 +113,24 @@ class FluxCalculator:
             progress_callback("Solving with Preconditioned CG (Jacobi)...")
 
         method = (solver_options or {}).get('method', SOLVER_METHOD_NAME)
-        self.potentials, info = self._solve_linear_system(matrix, rhs, tolerance, method)
+        if prepared_potentials is not None:
+            candidate = np.asarray(prepared_potentials, dtype=float)
+            residual = matrix @ candidate - rhs
+            residual_norm = float(np.linalg.norm(residual))
+            rhs_norm = float(np.linalg.norm(rhs))
+            relative = residual_norm / rhs_norm if rhs_norm else residual_norm
+            balanced = abs(float(rhs.sum())) <= max(float(np.abs(rhs).sum()), 1e-300) * 1e-10
+            if balanced and np.isfinite(candidate).all() and np.isfinite(relative) and relative <= tolerance:
+                self.potentials, info = candidate, 0
+                self._solver_method = 'prepared_response'
+                self._solver_residual_norm = residual_norm
+                self._solver_relative_residual = relative
+                self._solver_source_balance = float(rhs.sum())
+                self._solver_refinement_steps = 0
+            else:
+                self.potentials, info = self._solve_linear_system(matrix, rhs, tolerance, method)
+        else:
+            self.potentials, info = self._solve_linear_system(matrix, rhs, tolerance, method)
 
         if progress_callback:
             progress_callback("Computing branch fluxes...")

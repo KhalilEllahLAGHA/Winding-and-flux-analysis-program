@@ -9,14 +9,15 @@ from datetime import datetime
 from uuid import uuid4
 
 import numpy as np
-from PyQt6.QtCore import QProcess, QTimer, Qt
-from PyQt6.QtWidgets import (QCheckBox, QComboBox, QFileDialog,
+from PyQt6.QtCore import QProcess, QSignalBlocker, QTimer, Qt
+from PyQt6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog,
                              QFormLayout, QGroupBox, QHBoxLayout, QLabel,
                              QLineEdit, QMessageBox, QProgressBar, QPushButton,
                              QScrollArea, QSizePolicy, QSpinBox, QTabWidget, QVBoxLayout,
                              QWidget)
 
 from core.femm_runner import parse_validation_results
+from core.field_animation import FieldPreparationCache
 from core.femm_validation import (airgap_profile, airgap_samples,
                                   build_validation_script, compare_airgap_profiles,
                                   compute_reference_metrics)
@@ -25,6 +26,7 @@ from ui.theme import (FLUX_DENSITY_PAGE_STYLE, PAGE_SUBTITLE_STYLE,
 from utils.constants import (DEFAULT_AXIAL_LENGTH_MM, DEFAULT_CONTOUR_COUNT,
                              DEFAULT_RELATIVE_PERMEABILITIES)
 from utils.paths import FEMM_VALIDATION_DIR, PROJECT_ROOT, femm_worker_command
+from utils.phases import MAX_PHASE_COUNT
 
 import pyqtgraph as pg
 from ui.field_animation import AnimationPreparation, FieldAnimationView
@@ -59,6 +61,8 @@ class FluxDensityHeatmapUI:
         self._animation_worker = None
         self._cached_animation_signature = None
         self._animation_angle = 0.0
+        self._has_animation_angle = False
+        self._field_preparation_cache = FieldPreparationCache(direct_winding_updates=True)
         self._prepare_pending = False
         self._play_when_ready = False
         self._closing = False
@@ -97,6 +101,7 @@ class FluxDensityHeatmapUI:
 
         self.main_window.flux_density_page_ui = self
         self._connect_animation_inputs()
+        self._sync_animation_winding_controls()
         return widget
 
     def _build_left_panel(self):
@@ -302,6 +307,30 @@ class FluxDensityHeatmapUI:
         layout = QVBoxLayout(tab)
         settings = QFormLayout()
         settings.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        window.flux_anim_phases_spin = QSpinBox()
+        window.flux_anim_phases_spin.setRange(1, MAX_PHASE_COUNT)
+        window.flux_anim_phases_spin.setKeyboardTracking(False)
+        window.flux_anim_phases_spin.valueChanged.connect(window.phases_spin.setValue)
+        settings.addRow("Phases", window.flux_anim_phases_spin)
+        window.flux_anim_span_spin = QSpinBox()
+        window.flux_anim_span_spin.setRange(1, window.slots_spin.value())
+        window.flux_anim_span_spin.setKeyboardTracking(False)
+        window.flux_anim_span_spin.setSuffix(" slots")
+        window.flux_anim_span_spin.valueChanged.connect(window.span_spin.setValue)
+        settings.addRow("Coil span", window.flux_anim_span_spin)
+        window.flux_anim_layer_combo = QComboBox()
+        window.flux_anim_layer_combo.addItems(("Single layer", "Double layer"))
+        window.flux_anim_layer_combo.currentIndexChanged.connect(self._change_animation_layer)
+        settings.addRow("Layers", window.flux_anim_layer_combo)
+        window.flux_anim_wt_spin = QDoubleSpinBox()
+        window.flux_anim_wt_spin.setRange(0, 360)
+        window.flux_anim_wt_spin.setDecimals(2)
+        window.flux_anim_wt_spin.setSingleStep(1)
+        window.flux_anim_wt_spin.setSuffix(" deg")
+        window.flux_anim_wt_spin.setKeyboardTracking(False)
+        window.flux_anim_wt_spin.setValue(self._mmf_engine().wt_angle_deg)
+        window.flux_anim_wt_spin.valueChanged.connect(self._seek_animation_angle)
+        settings.addRow("Wt", window.flux_anim_wt_spin)
         window.flux_anim_angle_step_spin = QSpinBox()
         window.flux_anim_angle_step_spin.setRange(1, 30)
         window.flux_anim_angle_step_spin.setValue(1)
@@ -330,9 +359,37 @@ class FluxDensityHeatmapUI:
         window.flux_play_anim_btn.clicked.connect(self.toggle_animation)
         window.flux_play_anim_btn.setEnabled(False)
         buttons.addWidget(window.flux_play_anim_btn)
+        window.flux_restart_anim_btn = QPushButton("Restart")
+        window.flux_restart_anim_btn.clicked.connect(self.restart_animation)
+        buttons.addWidget(window.flux_restart_anim_btn)
         layout.addLayout(buttons)
         layout.addStretch()
         return tab
+
+    def _sync_animation_winding_controls(self, *_):
+        window = self.main_window
+        with QSignalBlocker(window.flux_anim_phases_spin):
+            window.flux_anim_phases_spin.setValue(window.phases_spin.value())
+        with QSignalBlocker(window.flux_anim_span_spin):
+            window.flux_anim_span_spin.setMaximum(window.slots_spin.value())
+            window.flux_anim_span_spin.setSingleStep(window.span_spin.singleStep())
+            window.flux_anim_span_spin.setValue(window.span_spin.value())
+        with QSignalBlocker(window.flux_anim_layer_combo):
+            window.flux_anim_layer_combo.setCurrentIndex(1 if window.double_layer.isChecked() else 0)
+
+    def _change_animation_layer(self, index):
+        window = self.main_window
+        (window.double_layer if index else window.single_layer).setChecked(True)
+
+    def _animation_winding_changed(self, *_):
+        self._sync_animation_winding_controls()
+        self.invalidate_animation()
+
+    def _seek_animation_angle(self, angle):
+        self.pause_animation(sync_results=False)
+        self._render_animation_angle(float(angle))
+        if self.animation_model is not None:
+            self._sync_field_results(float(angle))
 
 
     # -------------------------------------------------------------- pipeline
@@ -604,18 +661,21 @@ class FluxDensityHeatmapUI:
             field.textChanged.connect(self._geometry_changed)
         for field in (window.flux_ur_stator, window.flux_ur_rotor, window.flux_calc_axial_length):
             field.textChanged.connect(self.invalidate_animation)
-        for control in (window.phases_spin, window.slots_spin, window.poles_spin, window.span_spin,
-                        window.connection_tab.turns_spin, window.connection_tab.current_spin):
+        for control in (window.phases_spin, window.slots_spin, window.poles_spin, window.span_spin):
+            control.valueChanged.connect(self._animation_winding_changed)
+        for control in (window.connection_tab.turns_spin, window.connection_tab.current_spin):
             control.valueChanged.connect(self.invalidate_animation)
-        window.single_layer.toggled.connect(self.invalidate_animation)
+        window.single_layer.toggled.connect(self._animation_winding_changed)
 
     def _geometry_changed(self, *_):
         self.invalidate_animation()
         self._prepare_pending = False
+        self._play_when_ready = False
         self._auto_prepare_timer.stop()
         self.main_window.flux_anim_pg_widget.clear_model('Generate a new mesh for this geometry.')
 
     def invalidate_animation(self, *_):
+        resume = self.animation_timer.isActive() or self._play_when_ready
         self.pause_animation(sync_results=False)
         self.animation_model = None
         self.flux_results = self.reluctance_results = self.mmf_results = None
@@ -632,6 +692,8 @@ class FluxDensityHeatmapUI:
             'Preparing field...' if self._prepare_pending else 'Generate a mesh to prepare the field.')
         window.flux_anim_info_label.setText('Field preparation runs automatically in the background.')
         if self._prepare_pending:
+            self._play_when_ready = resume
+            window.flux_play_anim_btn.setText('Pause' if resume else 'Play')
             self._set_status('Preparing the updated field...')
             self._auto_prepare_timer.start(180)
         else:
@@ -653,9 +715,18 @@ class FluxDensityHeatmapUI:
         mesh = self._mesh_data()
         current = window.meshing_page_ui.get_machine_parameters()
         matrix = getattr(self._mmf_engine(), 'matrix', None)
-        if (mesh['params'] != current or matrix is None
-                or matrix.shape[1] != current['num_slots']):
+        if mesh['params'] != current:
             self._prepare_pending = False
+            return
+        if matrix is None or matrix.shape[1] != current['num_slots']:
+            self._prepare_pending = False
+            self._play_when_ready = False
+            window.flux_play_anim_btn.setText('Play')
+            window.flux_play_anim_btn.setEnabled(False)
+            message = (getattr(window.connection_tab, '_winding_error', None)
+                       or 'Choose a valid winding for the current slot and pole counts.')
+            window.flux_anim_pg_widget.clear_model('This winding is not feasible.')
+            self._set_status(message, 'warning')
             return
         signature = self._animation_input_signature()
         if self.animation_model is not None and signature == self._cached_animation_signature:
@@ -679,6 +750,7 @@ class FluxDensityHeatmapUI:
             worker = AnimationPreparation(
                 window, mesh=deepcopy(self._mesh_data()), engine=deepcopy(self._mmf_engine()),
                 materials=materials, axial_length_mm=length,
+                preparation_cache=self._field_preparation_cache,
                 mesh_settings=dict(window.meshing_page_ui.get_current_mesh_settings()),
                 resolution=int(np.clip(window.flux_anim_pg_widget.height(), 480, 800)))
             worker.input_signature = signature
@@ -714,14 +786,14 @@ class FluxDensityHeatmapUI:
         self.reluctance_results = model.reluctance_results
         self.mmf_results = model.mmf_results
         self.flux_results = model.initial_solution
-        self.update_regional_statistics()
-        self.update_flux_statistics()
         self._activate_animation_model(model)
 
     def _activate_animation_model(self, model):
         window = self.main_window
-        self._animation_angle = float(self._mmf_engine().wt_angle_deg)
+        if not self._has_animation_angle:
+            self._animation_angle = float(self._mmf_engine().wt_angle_deg)
         self._refresh_animation_display()
+        self._sync_field_results(self._animation_angle)
         window.flux_export_all_btn.setEnabled(True)
         window.flux_femm_validation_btn.setEnabled(True)
         window.flux_play_anim_btn.setEnabled(True)
@@ -749,6 +821,9 @@ class FluxDensityHeatmapUI:
 
     def _render_animation_angle(self, angle):
         self._animation_angle = angle
+        self._has_animation_angle = True
+        with QSignalBlocker(self.main_window.flux_anim_wt_spin):
+            self.main_window.flux_anim_wt_spin.setValue(angle)
         self.main_window.flux_anim_pg_widget.show_angle(angle)
         self.main_window.flux_anim_info_label.setText(
             f'Wt={angle:.1f} deg | {self.animation_span_degrees:.0f} deg loop')
@@ -808,6 +883,14 @@ class FluxDensityHeatmapUI:
             self._render_animation_angle(0.0)
             self._sync_field_results(0.0)
             self._set_status('Animation stopped.', 'muted')
+
+    def restart_animation(self):
+        self._render_animation_angle(0.0)
+        self._playback_start_angle = 0.0
+        self._playback_start_time = time.perf_counter()
+        if self.animation_model is not None:
+            self._sync_field_results(0.0)
+        self._set_status('Wt reset to zero.', 'muted')
 
     # --------------------------------------------------------- FEMM validation
 

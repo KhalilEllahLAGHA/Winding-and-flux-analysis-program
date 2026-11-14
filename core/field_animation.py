@@ -3,7 +3,8 @@
 With fixed geometry/permeability and sinusoidal excitation, each signed field
 component is B(0)*cos(Wt) + B(90)*sin(Wt). Magnitudes are evaluated AFTER combining
 the signed components. Az is linear too, so equal-Az contours retain the same
-conservative reconstruction as the static view. No solved field is rotated.
+conservative reconstruction as the static view. Machine symmetry is checked
+against the network before reusing its response for winding comparisons.
 """
 
 from copy import deepcopy
@@ -26,6 +27,97 @@ def _joined_paths(paths):
         if len(path):
             pieces.extend((path, np.full((1, 2), np.nan)))
     return np.concatenate(pieces) if pieces else np.empty((0, 2))
+
+
+class FieldPreparationCache:
+    """Reuse one network for serialized preparations with different windings."""
+
+    def __init__(self, direct_winding_updates=False):
+        self._key = None
+        self._reluctance = None
+        self._solver = None
+        self.direct_winding_updates = direct_winding_updates
+        self._response_count = None
+        self._response = None
+
+    def network(self, mesh, materials, axial_length_mm):
+        cells = tuple((e.get('element_id', e.get('id')), e['rin'], e['rout'],
+                       e['theta_start'], e['theta_end'], e['material'])
+                      for e in mesh['mesh_elements'])
+        key = (cells, tuple(sorted(materials.items())), float(axial_length_mm))
+        reused = key == self._key
+        if not reused:
+            reluctance = ReluctanceCalculator().calculate_reluctances(
+                mesh, dict(materials), {'axial_length': axial_length_mm})
+            self._key, self._reluctance = key, reluctance
+            self._solver = FluxCalculator()
+            self._response_count = self._response = None
+        return self._reluctance, self._solver, reused
+
+    def prepare_response(self, mesh, settings, mmf):
+        """Prepare one tooth response only when the network is slot-periodic."""
+        count = mesh['params']['num_slots']
+        if not self.direct_winding_updates or self._response_count == count:
+            return
+        self._response_count = count
+        elements = mesh['mesh_elements']
+        radii = np.unique([e['rin'] for e in elements])
+        angles = np.unique([e['theta_start'] for e in elements])
+        nr, nt = len(radii), len(angles)
+        if nt % count or nr * nt != len(elements):
+            return
+        indices = np.empty((nr, nt), dtype=int)
+        for index, element in enumerate(elements):
+            indices[np.searchsorted(radii, element['rin']),
+                    np.searchsorted(angles, element['theta_start'])] = index
+        step = nt // count
+        permutation = np.empty(len(elements), dtype=int)
+        permutation[indices.ravel()] = np.roll(indices, step, axis=1).ravel()
+        materials = np.asarray([element['material'] for element in elements])
+        if np.any(materials != materials[permutation]):
+            return
+
+        class ToothSource:
+            def __init__(self, tooth):
+                self.values = np.zeros(count)
+                self.values[tooth] = 1.0
+
+            def get_tooth_mmf_data(self):
+                return {'Resultant': {'tooth_mmf': self.values}}
+
+        solver = self._solver
+        rhs_vectors = []
+        for tooth in (0, 1):
+            source = mmf.calculate_teeth_mmf(mesh, settings, ToothSource(tooth), build_full=False)
+            solver.reluctance_data = self._reluctance['reluctance_data']
+            solver.mmf_data = []
+            solver._element_mmf_ud = None
+            solver._element_mmf_up = source['element_mmf_up']
+            solver._element_mmf_down = source['element_mmf_down']
+            matrix, rhs = solver._get_system()
+            rhs_vectors.append(rhs)
+        difference = matrix[permutation][:, permutation] - matrix
+        scale = max(float(np.max(np.abs(matrix.data))), 1e-300)
+        if difference.nnz and np.max(np.abs(difference.data)) > scale * 1e-10:
+            return
+        rhs0, rhs1 = rhs_vectors
+        if not np.allclose(rhs1, rhs0[permutation], rtol=1e-10,
+                           atol=max(float(np.max(np.abs(rhs0))), 1e-300) * 1e-12):
+            return
+        potential, _ = solver._solve_linear_system(matrix, rhs0, 1e-10, 'auto')
+        self._response = (indices, step, np.fft.rfft(potential[indices], axis=1))
+
+    def potentials_for(self, tooth_values):
+        if self._response is None:
+            return None
+        indices, step, response = self._response
+        nt = indices.shape[1]
+        impulses = np.zeros(nt)
+        impulses[::step] = tooth_values
+        values = np.fft.irfft(response * np.fft.rfft(impulses)[None, :], n=nt, axis=1)
+        potential = np.empty(indices.size)
+        potential[indices.ravel()] = values.ravel()
+        return potential - potential[0]
 
 
 @dataclass
@@ -209,8 +301,9 @@ class FieldAnimationModel:
 
 
 def build_field_animation(mesh, engine, materials, axial_length_mm, mesh_settings,
-                          resolution=640, progress=None, cancelled=None):
-    """Make two independently residual-checked basis solves, leaving inputs intact."""
+                          resolution=640, progress=None, cancelled=None,
+                          preparation_cache=None):
+    """Prepare two residual-checked field bases, leaving the inputs intact."""
     start = time.perf_counter()
     engine = deepcopy(engine)
     initial_angle = engine.wt_angle_deg
@@ -220,24 +313,35 @@ def build_field_animation(mesh, engine, materials, axial_length_mm, mesh_setting
         if progress:
             progress(percent, message)
     report(5, 'Preparing the magnetic model…')
-    reluctance = ReluctanceCalculator().calculate_reluctances(
-        mesh, materials, {'axial_length': axial_length_mm})
-    mmf, solver, solutions = TeethSlotMMFCalculator(), FluxCalculator(), []
+    cache = preparation_cache if preparation_cache is not None else FieldPreparationCache()
+    reluctance, solver, network_reused = cache.network(mesh, materials, axial_length_mm)
+    mmf, solutions = TeethSlotMMFCalculator(), []
+    if cache.direct_winding_updates:
+        report(10, 'Preparing winding comparisons...')
+        cache.prepare_response(mesh, mesh_settings, mmf)
     sources, right_hand_sides, residuals = [], [], []
     for index, angle in enumerate((0, 90)):
-        report(20 + 25*index, f'Solving field basis {index+1}/2…')
+        report(20 + 25*index, f'Updating field basis {index+1}/2…')
         engine.update_wt_angle(angle)
         source = mmf.calculate_teeth_mmf(mesh, mesh_settings, engine, build_full=False)
         sources.append(source)
         solutions.append(solver.calculate_flux_distribution(
-            reluctance, source, {'method': 'auto', 'tolerance': 1e-8}, include_statistics=False))
+            reluctance, source, {'method': 'auto', 'tolerance': 1e-8}, include_statistics=False,
+            prepared_potentials=cache.potentials_for(source['tooth_mmf_values'])))
         rhs = solver._build_rhs_vector()
         right_hand_sides.append(rhs)
         residuals.append(solver._cached_matrix @ solutions[-1]['potentials'] - rhs)
     report(75, 'Preparing the continuous field display…')
     model = FieldAnimationModel.from_solutions(mesh, solutions, axial_length_mm, resolution)
+    model.network_reused = network_reused
+    model.direct_winding_updates = all(
+        result['solver_info']['method'] == 'prepared_response' for result in solutions)
     report(90, 'Preparing field values and statistics...')
-    model.reluctance_results = reluctance
+    # The solver keeps stable network records so its factorization stays reusable.
+    # Models own the mutable source attachments used by export/statistics snapshots.
+    model.reluctance_results = dict(reluctance)
+    model.reluctance_results['reluctance_data'] = [dict(row) for row in reluctance['reluctance_data']]
+    model.reluctance_results['statistics'] = dict(reluctance['statistics'])
     engine.update_wt_angle(initial_angle)
     model.mmf_results = mmf.calculate_teeth_mmf(mesh, mesh_settings, engine)
     ids = [element['element_id'] for element in reluctance['reluctance_data']]
