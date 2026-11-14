@@ -1,4 +1,4 @@
-# Preserve generated documents and media byte-for-byte on Windows checkouts.
+# Preserve local documents and required application resources byte-for-byte.
 *.pdf binary
 *.mp4 binary
 *.png binary

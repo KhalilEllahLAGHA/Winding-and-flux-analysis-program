@@ -19,3 +19,21 @@ femm_validation/runs/
 
 # Local regression tests
 /tests/
+
+# Local reports, generated studies and historical output (not application source)
+/docs/
+/pics/
+/context.md
+/requirements-report.txt
+/femm_validation/*.fem
+/femm_validation/*.ans
+/femm_validation/physics-audit.md
+
+# Local report authoring and standalone study helpers
+/tools/build_algorithm_report.py
+/tools/generate_report_assets.py
+/tools/export_report_windings.py
+/tools/compare_femm_physics.py
+/tools/femm_drawing.py
+/tools/flux_run.py
+/tools/validation_a_vide.py

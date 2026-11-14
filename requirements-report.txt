@@ -1,6 +1,0 @@
-# Optional dependencies for scientific report / MP4 reproduction.
-# Install requirements.txt first.
-reportlab>=4
-pypdf>=5
-pdfplumber>=0.11
-imageio-ffmpeg>=0.6
