@@ -14,13 +14,13 @@ dist/
 Thumbs.db
 .DS_Store
 
-# Reproducible, per-run FEMM validation artifacts
+# FEMM output
 femm_validation/runs/
 
 # Local regression tests
 /tests/
 
-# Local reports, generated studies and historical output (not application source)
+# Local files
 /docs/
 /pics/
 /context.md
@@ -29,7 +29,7 @@ femm_validation/runs/
 /femm_validation/*.ans
 /femm_validation/physics-audit.md
 
-# Local report authoring and standalone study helpers
+# Local scripts
 /tools/build_algorithm_report.py
 /tools/generate_report_assets.py
 /tools/export_report_windings.py
@@ -37,3 +37,6 @@ femm_validation/runs/
 /tools/femm_drawing.py
 /tools/flux_run.py
 /tools/validation_a_vide.py
+/tools/benchmark_solver.py
+/tools/check_multiphase.py
+/tools/build_icon.py

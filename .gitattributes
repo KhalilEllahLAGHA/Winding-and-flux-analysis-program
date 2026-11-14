@@ -1,9 +1,7 @@
-# Preserve local documents and required application resources byte-for-byte.
 *.pdf binary
 *.mp4 binary
 *.png binary
 *.jpg binary
 *.jpeg binary
 *.ico binary
-# Keep the pinned upstream module byte-identical to the recorded source.
 third_party/dolomites/koil.py -text
