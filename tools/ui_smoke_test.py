@@ -69,6 +69,10 @@ def run_smoke_test(window, output):
                 and controller._animation_worker is None)
     heartbeat.stop()
     window.navigate_to_stage(4)
+    _require(not controller.animation_timer.isActive())
+    _require(window.flux_play_anim_btn.text() == 'Play')
+    _require(not any(button.text() in ('Pause', 'Stop')
+                    for button in window.findChildren(QPushButton)))
     results = controller.flux_results
     _require(results and results['flux_densities'])
     _require(window.flux_export_all_btn.isEnabled())
@@ -113,10 +117,12 @@ def run_smoke_test(window, output):
         controller._render_animation_angle(float(angle))
         app.processEvents()
         render_times.append(time.perf_counter() - started)
-    controller.play_animation()
+    window.flux_play_anim_btn.click()
     _require(controller.animation_timer.isActive())
-    controller.pause_animation()
+    _require(window.flux_play_anim_btn.text() == 'Pause')
+    window.flux_play_anim_btn.click()
     _require(not controller.animation_timer.isActive())
+    _require(window.flux_play_anim_btn.text() == 'Play')
     window.flux_tabs.setCurrentIndex(0)
     controller._render_animation_angle(47.0)
     app.processEvents()
@@ -145,7 +151,8 @@ def run_smoke_test(window, output):
                  'p95_frame_ms': 1000*float(np.percentile(render_times, 95)),
                  'frames_rendered': len(render_times),
                  'worker_responsive': bool(heartbeats), 'cache_reused': True,
-                 'automatic_preparation': True, 'arrow_toggle': True}
+                 'automatic_preparation': True, 'arrow_toggle': True,
+                 'paused_initially': True, 'play_pause_toggle': True}
 
     window.meshing_page_ui.invalidate_mesh()
     _require(not window.navigation_buttons[4].isEnabled())
@@ -157,6 +164,7 @@ def run_smoke_test(window, output):
         'screenshots': captures, 'clipped_buttons': clipping,
         'checks': ['direct navigation', 'mesh prerequisite', 'mesh generation',
                    'automatic field preparation', 'arrow visibility',
+                   'paused initial view', 'single play/pause button',
                    'export enabled', 'mesh invalidation',
                    'desktop and minimum-size layouts'],
     }

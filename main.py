@@ -183,8 +183,6 @@ class MainWindow(QMainWindow):
             go_to_flux_step(self, stage - 2)
             self.tabs.setCurrentIndex(2)
         self.sync_navigation()
-        if stage == 4:
-            self.flux_density_page_ui.play_animation()
         self.tabs.currentWidget().setFocus(Qt.FocusReason.OtherFocusReason)
 
     def sync_navigation(self, *_):

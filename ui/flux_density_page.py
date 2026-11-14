@@ -327,14 +327,9 @@ class FluxDensityHeatmapUI:
         buttons = QHBoxLayout()
         window.flux_play_anim_btn = QPushButton("Play")
         window.flux_play_anim_btn.setObjectName('primaryButton')
-        window.flux_play_anim_btn.clicked.connect(self.play_animation)
-        window.flux_pause_anim_btn = QPushButton("Pause")
-        window.flux_pause_anim_btn.clicked.connect(self.pause_animation)
-        window.flux_stop_anim_btn = QPushButton("Stop")
-        window.flux_stop_anim_btn.clicked.connect(self.stop_animation)
-        for button in (window.flux_play_anim_btn, window.flux_pause_anim_btn, window.flux_stop_anim_btn):
-            button.setEnabled(False)
-            buttons.addWidget(button)
+        window.flux_play_anim_btn.clicked.connect(self.toggle_animation)
+        window.flux_play_anim_btn.setEnabled(False)
+        buttons.addWidget(window.flux_play_anim_btn)
         layout.addLayout(buttons)
         layout.addStretch()
         return tab
@@ -633,7 +628,6 @@ class FluxDensityHeatmapUI:
         window.flux_export_all_btn.setEnabled(False)
         window.flux_femm_validation_btn.setEnabled(False)
         window.flux_play_anim_btn.setEnabled(self._prepare_pending)
-        window.flux_stop_anim_btn.setEnabled(self._prepare_pending)
         window.flux_anim_pg_widget.clear_model(
             'Preparing field...' if self._prepare_pending else 'Generate a mesh to prepare the field.')
         window.flux_anim_info_label.setText('Field preparation runs automatically in the background.')
@@ -696,12 +690,12 @@ class FluxDensityHeatmapUI:
             worker.finished.connect(self._animation_worker_finished)
             window.flux_progress_bar.setVisible(True)
             window.flux_progress_bar.setValue(0)
-            window.flux_play_anim_btn.setEnabled(not self._play_when_ready)
-            window.flux_stop_anim_btn.setEnabled(True)
+            window.flux_play_anim_btn.setEnabled(True)
             worker.start()
         except Exception as error:
             self._prepare_pending = False
             self._play_when_ready = False
+            window.flux_play_anim_btn.setText('Play')
             self._set_status(f'Check field settings: {error}', 'warning')
 
     def _animation_progress(self, percent, message):
@@ -731,8 +725,7 @@ class FluxDensityHeatmapUI:
         window.flux_export_all_btn.setEnabled(True)
         window.flux_femm_validation_btn.setEnabled(True)
         window.flux_play_anim_btn.setEnabled(True)
-        window.flux_pause_anim_btn.setEnabled(False)
-        window.flux_stop_anim_btn.setEnabled(True)
+        window.flux_play_anim_btn.setText('Play')
         window.flux_anim_pg_widget.probe.clear()
         self._set_status(f'Field ready in {model.generation_seconds:.2f} s. Press Play.', 'success')
         if self._play_when_ready:
@@ -742,6 +735,7 @@ class FluxDensityHeatmapUI:
         worker = self._animation_worker
         if worker is not None and not worker.isInterruptionRequested() and not self._closing:
             self._play_when_ready = False
+            self.main_window.flux_play_anim_btn.setText('Play')
             self._set_status(f'Field preparation failed: {message}', 'warning')
 
     def _animation_worker_finished(self):
@@ -769,11 +763,18 @@ class FluxDensityHeatmapUI:
                  / window.flux_anim_interval_spin.value()) % self.animation_span_degrees
         self._render_animation_angle(angle)
 
+    def toggle_animation(self):
+        if self.animation_timer.isActive() or self._play_when_ready:
+            self.pause_animation()
+        else:
+            self.play_animation()
+
     def play_animation(self):
         if self.animation_model is None:
             if self._mesh_data():
                 self._play_when_ready = True
-                self.main_window.flux_play_anim_btn.setEnabled(False)
+                self.main_window.flux_play_anim_btn.setText('Pause')
+                self.main_window.flux_play_anim_btn.setEnabled(True)
                 self._set_status('Preparing the field. Playback will start when ready.')
                 self.prepare_animation_frames()
             return
@@ -781,23 +782,25 @@ class FluxDensityHeatmapUI:
         self._playback_start_time = time.perf_counter()
         self._playback_start_angle = self._animation_angle
         self.animation_timer.start(self.main_window.flux_anim_interval_spin.value())
-        self.main_window.flux_play_anim_btn.setEnabled(False)
-        self.main_window.flux_pause_anim_btn.setEnabled(True)
-        self.main_window.flux_stop_anim_btn.setEnabled(True)
+        self.main_window.flux_play_anim_btn.setText('Pause')
+        self.main_window.flux_play_anim_btn.setEnabled(True)
         self._set_status('Animation playing...')
 
     def pause_animation(self, *, sync_results=True):
         was_running = self.animation_timer.isActive()
+        was_queued = self._play_when_ready
         self.animation_timer.stop()
         self._play_when_ready = False
         if hasattr(self.main_window, 'flux_play_anim_btn'):
+            self.main_window.flux_play_anim_btn.setText('Play')
             self.main_window.flux_play_anim_btn.setEnabled(
                 self.animation_model is not None or bool(self._mesh_data()))
-            self.main_window.flux_pause_anim_btn.setEnabled(False)
         if was_running:
             if sync_results and self.animation_model is not None:
                 self._sync_field_results(self._animation_angle)
             self._set_status('Animation paused.', 'muted')
+        elif was_queued:
+            self._set_status('Playback paused. Field preparation continues.', 'muted')
 
     def stop_animation(self):
         self.pause_animation(sync_results=False)
